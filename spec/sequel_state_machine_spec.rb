@@ -1,0 +1,178 @@
+# frozen_string_literal: true
+
+require "sequel"
+require "state_machines/sequel/spec_helpers"
+
+RSpec.describe "sequel-state-machine", :db do
+  before(:all) do
+    @db = Sequel.sqlite
+    @db.create_table(:spec_model_users) do
+      primary_key :id
+    end
+    @db.create_table(:spec_models) do
+      primary_key :id
+      text :status, null: false, default: "created"
+      real :total, null: false, default: 0
+      text :charge_status, null: false, default: ""
+    end
+    @db.create_table(:spec_model_audit_logs) do
+      primary_key :id
+      timestamptz :at, null: false
+      text :event, null: false
+      text :to_state, null: false
+      text :from_state, null: false
+      text :reason, null: false, default: ""
+      text :messages, default: ""
+      foreign_key :spec_model_id, :spec_models, null: false, on_delete: :cascade
+      index :spec_model_id
+      foreign_key :actor_id, :spec_model_users, null: true, on_delete: :set_null
+    end
+    require_relative "spec_models"
+  end
+  after(:all) do
+    @db.disconnect
+  end
+
+  let(:model) { SequelStateMachine::SpecModel }
+  let(:instance) { subclass.new }
+
+  describe "audit logging" do
+    it "logs success transitions" do
+      o = model.create
+      expect(o).to transition_on(:finalize).to("open")
+      expect(o).to transition_on(:charge).to("paid")
+      expect(o.audit_logs).to contain_exactly(
+        have_attributes(from_state: "pending", to_state: "open", event: "finalize"),
+        have_attributes(from_state: "open", to_state: "paid", event: "charge"),
+      )
+    end
+
+    it "logs unsuccessful transitions" do
+      o = model.create
+      expect(o).to not_transition_on(:charge)
+      expect(o.audit_logs).to contain_exactly(
+        have_attributes(from_state: "pending", to_state: "pending", event: "charge"),
+      )
+    end
+
+    it "logs activity during a transition" do
+      o = model.create
+      def o.finalize
+        self.audit("doing a thing")
+        return super
+      end
+      expect(o).to transition_on(:finalize).to("open")
+      expect(o.audit_logs).to contain_exactly(
+        have_attributes(event: "finalize", messages: "doing a thing"),
+      )
+    end
+
+    it "can include a reason for a failed transition" do
+      o = model.create
+      def o.finalize
+        self.audit("doing a thing", reason: "bad stuff")
+        return super
+      end
+      expect(o).to transition_on(:finalize).to("open")
+      expect(o.audit_logs).to contain_exactly(
+        have_attributes(event: "finalize", reason: "bad stuff"),
+      )
+    end
+
+    it "updates the existing audit log for the transition, rather than adding a new one" do
+      o = model.create
+      o_meta = class << o; self; end
+      o_meta.send(:define_method, :charge) do
+        self.audit("msg1", reason: "first fail")
+        super()
+      end
+      expect(o).to not_transition_on(:charge)
+      expect(o.audit_logs).to contain_exactly(
+        have_attributes(event: "charge", reason: "first fail"),
+      )
+
+      o_meta.send(:define_method, :charge) do
+        self.audit("msg2", reason: "second fail")
+        super()
+      end
+      expect(o).to not_transition_on(:charge)
+
+      expect(o.refresh.audit_logs).to contain_exactly(
+        have_attributes(event: "charge", reason: "second fail"),
+      )
+    end
+
+    it "can create a one-time audit log" do
+      o = model.create
+      o.audit_one_off("one_off", ["msg1", "msg2"], reason: "rsn")
+      expect(o.audit_logs).to contain_exactly(
+        have_attributes(
+          event: "one_off",
+          from_state: "pending",
+          to_state: "pending",
+          reason: "rsn",
+          messages: "msg1\nmsg2",
+        ),
+      )
+    end
+
+    it "can create a one-time audit log using a string message" do
+      o = model.create
+      o.audit_one_off("one_off", "my message")
+      expect(o.audit_logs).to contain_exactly(
+        have_attributes(
+          messages: "my message",
+        ),
+      )
+    end
+
+    describe "actor management" do
+      let(:user) { SequelStateMachine::SpecModel::User.create }
+
+      it "captures the current actor during one-offs" do
+        o = model.create
+        StateMachines::Sequel.set_current_actor(user) do
+          o.audit_one_off("one_off", "my message")
+        end
+        expect(o.audit_logs).to contain_exactly(
+          have_attributes(
+            messages: "my message",
+            actor: be === user,
+          ),
+        )
+      end
+
+      it "captures the current actor for successful transitions" do
+        o = model.create
+        StateMachines::Sequel.set_current_actor(user) do
+          expect(o).to transition_on(:finalize).to("open")
+        end
+        expect(o).to transition_on(:charge).to("paid")
+        expect(o.audit_logs).to contain_exactly(
+          have_attributes(event: "finalize", actor: be === user),
+          have_attributes(event: "charge", actor: nil),
+        )
+      end
+
+      it "captures the current actor for successful transitions" do
+        o = model.create
+        StateMachines::Sequel.set_current_actor(user) do
+          expect(o).to not_transition_on(:charge)
+        end
+        expect(o.audit_logs).to contain_exactly(
+          have_attributes(event: "charge", actor: be === user),
+        )
+      end
+
+      it "updates an existing audit log with the actor" do
+        o = model.create
+        expect(o).to not_transition_on(:charge)
+        expect(o.audit_logs).to contain_exactly(have_attributes(actor: nil))
+        StateMachines::Sequel.set_current_actor(user) do
+          expect(o).to not_transition_on(:charge)
+        end
+        expect(o.audit_logs).to contain_exactly(have_attributes(actor: be === user))
+      end
+    end
+  end
+end
