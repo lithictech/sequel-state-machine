@@ -52,13 +52,22 @@ module Sequel
 
       module InstanceMethods
         def failed?
-          colmap = self.state_machine_column_mappings
-          return colmap[:from_state] == colmap[:to_state]
+          from_state = self._get_mapped_column_value(:from_state)
+          to_state = self._get_mapped_column_value(:to_state)
+          return from_state == to_state
         end
 
         def succeeded?
-          colmap = self.state_machine_column_mappings
-          return colmap[:from_state] != colmap[:to_state]
+          return !self.failed?
+        end
+
+        def full_message
+          msg = self._get_mapped_column_value(:messages)
+          return self.class.state_machine_messages_supports_array ? msg.join(", ") : msg
+        end
+
+        def _get_mapped_column_value(col)
+          return self[self.class.state_machine_column_mappings[col]]
         end
       end
     end

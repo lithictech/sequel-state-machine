@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "sequel"
+require "state_machines/macro_methods"
 require "state_machines/sequel/spec_helpers"
 
 RSpec.describe "sequel-state-machine", :db do
@@ -34,7 +35,6 @@ RSpec.describe "sequel-state-machine", :db do
   end
 
   let(:model) { SequelStateMachine::SpecModel }
-  let(:instance) { subclass.new }
 
   describe "audit logging" do
     it "logs success transitions" do
@@ -42,8 +42,8 @@ RSpec.describe "sequel-state-machine", :db do
       expect(o).to transition_on(:finalize).to("open")
       expect(o).to transition_on(:charge).to("paid")
       expect(o.audit_logs).to contain_exactly(
-        have_attributes(from_state: "pending", to_state: "open", event: "finalize"),
-        have_attributes(from_state: "open", to_state: "paid", event: "charge"),
+        have_attributes(from_state: "pending", to_state: "open", event: "finalize", succeeded?: true),
+        have_attributes(from_state: "open", to_state: "paid", event: "charge", succeeded?: true),
       )
     end
 
@@ -51,7 +51,7 @@ RSpec.describe "sequel-state-machine", :db do
       o = model.create
       expect(o).to not_transition_on(:charge)
       expect(o.audit_logs).to contain_exactly(
-        have_attributes(from_state: "pending", to_state: "pending", event: "charge"),
+        have_attributes(from_state: "pending", to_state: "pending", event: "charge", failed?: true),
       )
     end
 
@@ -63,7 +63,7 @@ RSpec.describe "sequel-state-machine", :db do
       end
       expect(o).to transition_on(:finalize).to("open")
       expect(o.audit_logs).to contain_exactly(
-        have_attributes(event: "finalize", messages: "doing a thing"),
+        have_attributes(event: "finalize", messages: "doing a thing", full_message: "doing a thing"),
       )
     end
 
@@ -112,6 +112,7 @@ RSpec.describe "sequel-state-machine", :db do
           to_state: "pending",
           reason: "rsn",
           messages: "msg1\nmsg2",
+          full_message: "msg1\nmsg2",
         ),
       )
     end
@@ -173,6 +174,115 @@ RSpec.describe "sequel-state-machine", :db do
         end
         expect(o.audit_logs).to contain_exactly(have_attributes(actor: be === user))
       end
+    end
+  end
+
+  describe "process" do
+    let(:instance) { model.create }
+
+    it "saves the model and returns true on a successful transition" do
+      expect(instance).to receive(:save_changes)
+      expect(instance.process(:finalize)).to be_truthy
+    end
+
+    it "saves the model and returns false on an unsuccessful transition" do
+      expect(instance).to receive(:save_changes)
+      expect(instance.process(:charge)).to be_falsey
+    end
+  end
+
+  describe "must_process" do
+    let(:instance) { model.create }
+
+    it "returns the receiver if the event succeeds" do
+      expect(instance.must_process(:finalize)).to be(instance)
+    end
+
+    it "errors if processing fails" do
+      expect { instance.must_process(:charge) }.to raise_error(StateMachines::Sequel::FailedTransition)
+    end
+
+    it "has a nice error" do
+      instance.audit("hello")
+      instance.audit("newer")
+      expect do
+        instance.must_process(:charge)
+      end.to raise_error("SequelStateMachine::SpecModel[#{instance.id}] failed to transition on charge: hellonewer")
+    end
+  end
+
+  describe "process_if" do
+    let(:instance) { model.create }
+
+    it "returns the receiver if the block is true and processing succeeds" do
+      expect(instance.process_if(:finalize) { true }).to be(instance)
+    end
+
+    it "errors if the block is true and processing fails" do
+      expect { instance.process_if(:charge) { true } }.to raise_error(StateMachines::Sequel::FailedTransition)
+    end
+
+    it "returns the receiver if the block is false" do
+      expect(instance.process_if(:charge) { false }).to be(instance)
+    end
+  end
+
+  describe "valid_state_path_through?" do
+    require "sequel/plugins/state_machine"
+    test_cls = Class.new do
+      extend StateMachines::MacroMethods
+      include Sequel::Plugins::StateMachine::InstanceMethods
+      attr_accessor :state
+
+      state_machine :state, initial: :created do
+        state :begin, :middle, :end
+
+        event :move_begin do
+          transition begin: :middle
+        end
+
+        event :move_middle do
+          transition((all - [:begin, :end]) => :end)
+        end
+
+        event :move_any_to_end do
+          transition all => :end
+        end
+      end
+    end
+
+    let(:instance) { test_cls.new }
+
+    it "is true if the given event has a from state equal to the current state" do
+      instance.state = "begin"
+      expect(instance.valid_state_path_through?(:move_begin)).to be_truthy
+      expect(instance.valid_state_path_through?(:move_middle)).to be_falsey
+      expect(instance.valid_state_path_through?(:move_any_to_end)).to be_truthy
+      expect { instance.valid_state_path_through?(:not_exists) }.to raise_error(/Invalid event/)
+      instance.state = "middle"
+      expect(instance.valid_state_path_through?(:move_begin)).to be_falsey
+      expect(instance.valid_state_path_through?(:move_middle)).to be_truthy
+      expect(instance.valid_state_path_through?(:move_any_to_end)).to be_truthy
+      instance.state = "end"
+      expect(instance.valid_state_path_through?(:move_begin)).to be_falsey
+      expect(instance.valid_state_path_through?(:move_middle)).to be_falsey
+      expect(instance.valid_state_path_through?(:move_any_to_end)).to be_truthy
+    end
+  end
+
+  context "validates_state_machine" do
+    let(:instance) { model.new }
+
+    it "is valid for valid states" do
+      instance.status = "open"
+      instance.validates_state_machine
+      expect(instance.errors).to be_empty
+
+      instance.status = "invalid"
+      instance.validates_state_machine
+      expect(instance.errors[:status].first).to eq(
+        "status 'invalid' must be one of (charged, failed, open, paid, pending)",
+      )
     end
   end
 end

@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "state_machines"
+
 module StateMachines
   module Sequel
     class CurrentActorAlreadySet < StateMachines::Error; end
@@ -11,11 +13,12 @@ module StateMachines
         @event = event
         @object = obj
         msg = "#{obj.class}[#{obj.id}] failed to transition on #{event}"
-        if obj.respond_to?(:audit_logs) && obj.audit_logs.present?
+        if obj.respond_to?(:audit_logs) && !obj.audit_logs.empty?
           @audit_log = obj.audit_logs.max_by(&:id)
-          msg += ": #{@audit_log.messages.last}"
+          msg += ": #{@audit_log.full_message}"
+          msg = msg.tr("\n", " ").strip
         end
-        super(msg)
+        super(obj, msg)
       end
     end
 
