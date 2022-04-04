@@ -7,16 +7,16 @@ require "state_machines/sequel/spec_helpers"
 RSpec.describe "sequel-state-machine", :db do
   before(:all) do
     @db = Sequel.sqlite
-    @db.create_table(:spec_model_users) do
+    @db.create_table(:users) do
       primary_key :id
     end
-    @db.create_table(:spec_models) do
+    @db.create_table(:charges) do
       primary_key :id
       text :status, null: false, default: "created"
       real :total, null: false, default: 0
       text :charge_status, null: false, default: ""
     end
-    @db.create_table(:spec_model_audit_logs) do
+    @db.create_table(:charge_audit_logs) do
       primary_key :id
       timestamptz :at, null: false
       text :event, null: false
@@ -24,9 +24,9 @@ RSpec.describe "sequel-state-machine", :db do
       text :from_state, null: false
       text :reason, null: false, default: ""
       text :messages, default: ""
-      foreign_key :spec_model_id, :spec_models, null: false, on_delete: :cascade
-      index :spec_model_id
-      foreign_key :actor_id, :spec_model_users, null: true, on_delete: :set_null
+      foreign_key :charge_id, :charges, null: false, on_delete: :cascade
+      index :charge_id
+      foreign_key :actor_id, :users, null: true, on_delete: :set_null
     end
     require_relative "spec_models"
   end
@@ -34,9 +34,9 @@ RSpec.describe "sequel-state-machine", :db do
     @db.disconnect
   end
 
-  let(:model) { SequelStateMachine::SpecModel }
-
   describe "audit logging" do
+    let(:model) { SequelStateMachine::SpecModels::Charge }
+
     it "logs success transitions" do
       o = model.create
       expect(o).to transition_on(:finalize).to("open")
@@ -128,7 +128,8 @@ RSpec.describe "sequel-state-machine", :db do
     end
 
     describe "actor management" do
-      let(:user) { SequelStateMachine::SpecModel::User.create }
+      let(:model) { SequelStateMachine::SpecModels::Charge }
+      let(:user) { SequelStateMachine::SpecModels::User.create }
 
       it "captures the current actor during one-offs" do
         o = model.create
@@ -178,6 +179,7 @@ RSpec.describe "sequel-state-machine", :db do
   end
 
   describe "process" do
+    let(:model) { SequelStateMachine::SpecModels::Charge }
     let(:instance) { model.create }
 
     it "saves the model and returns true on a successful transition" do
@@ -192,6 +194,7 @@ RSpec.describe "sequel-state-machine", :db do
   end
 
   describe "must_process" do
+    let(:model) { SequelStateMachine::SpecModels::Charge }
     let(:instance) { model.create }
 
     it "returns the receiver if the event succeeds" do
@@ -207,11 +210,14 @@ RSpec.describe "sequel-state-machine", :db do
       instance.audit("newer")
       expect do
         instance.must_process(:charge)
-      end.to raise_error("SequelStateMachine::SpecModel[#{instance.id}] failed to transition on charge: hellonewer")
+      end.to raise_error(
+        "SequelStateMachine::SpecModels::Charge[#{instance.id}] failed to transition on charge: hellonewer",
+      )
     end
   end
 
   describe "process_if" do
+    let(:model) { SequelStateMachine::SpecModels::Charge }
     let(:instance) { model.create }
 
     it "returns the receiver if the block is true and processing succeeds" do
@@ -271,6 +277,7 @@ RSpec.describe "sequel-state-machine", :db do
   end
 
   context "validates_state_machine" do
+    let(:model) { SequelStateMachine::SpecModels::Charge }
     let(:instance) { model.new }
 
     it "is valid for valid states" do
