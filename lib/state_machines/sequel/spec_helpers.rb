@@ -6,7 +6,7 @@ RSpec::Matchers.define :transition_on do |event|
   match do |receiver|
     raise 'must provide a "to" state' if (@to || "").to_s.empty?
     receiver.send(event, *@args)
-    @to == receiver.status
+    @to == receiver[receiver._state_value_attr]
   end
 
   chain :to do |to_state|
@@ -22,11 +22,12 @@ RSpec::Matchers.define :transition_on do |event|
   end
 
   failure_message do |receiver|
+    receiver_status = receiver[receiver._state_value_attr]
     msg =
-      if @to == receiver.status
+      if @to == receiver_status
         "expected that event #{event} would transition, but did not"
       else
-        "expected that event #{event} would transition to #{@to} but is #{receiver.status}"
+        "expected that event #{event} would transition to #{@to} but is #{receiver_status}"
       end
     (msg += "\n#{receiver.audit_logs.map(&:inspect).join("\n")}") if @audit
     msg
@@ -43,7 +44,7 @@ RSpec::Matchers.define :not_transition_on do |event|
   end
 
   failure_message do |receiver|
-    "expected that event #{event} would not transition, but did and is now #{receiver.status}"
+    "expected that event #{event} would not transition, but did and is now #{receiver[receiver._state_value_attr]}"
   end
 end
 

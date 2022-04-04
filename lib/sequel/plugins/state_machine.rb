@@ -72,8 +72,8 @@ module Sequel
           audlog.set(
             at: Time.now,
             event: event,
-            from_state: self.status,
-            to_state: self.status,
+            from_state: self[self._state_value_attr],
+            to_state: self[self._state_value_attr],
             messages: audlog.class.state_machine_messages_supports_array ? messages : messages.join("\n"),
             reason: reason || "",
             actor: StateMachines::Sequel.current_actor,

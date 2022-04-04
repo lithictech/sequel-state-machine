@@ -11,7 +11,7 @@ module SequelStateMachine
 
       one_to_many :audit_logs, class: "SequelStateMachine::SpecModels::ChargeAuditLog", order: Sequel.desc(:at)
 
-      state_machine :status, initial: :pending do
+      state_machine :status_col, initial: :pending do
         state :pending,
               :open,
               :charged,

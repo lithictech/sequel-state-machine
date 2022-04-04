@@ -12,7 +12,7 @@ RSpec.describe "sequel-state-machine", :db do
     end
     @db.create_table(:charges) do
       primary_key :id
-      text :status, null: false, default: "created"
+      text :status_col, null: false, default: "created"
       real :total, null: false, default: 0
       text :charge_status, null: false, default: ""
     end
