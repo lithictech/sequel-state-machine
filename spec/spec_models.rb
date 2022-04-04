@@ -39,8 +39,10 @@ module SequelStateMachine
 
       timestamp_accessors(
         [
+          [{to: "open"}, :finalized_at],
           [{event: "charge", from: "open", to: "charged"}, :charged_at],
           [{to: "paid"}, :paid_at],
+          [{to: "failed"}, :failed_at],
         ],
       )
 

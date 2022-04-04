@@ -49,6 +49,7 @@ RSpec::Matchers.define :not_transition_on do |event|
 end
 
 RSpec.shared_examples "a state machine with audit logging" do |event, to_state|
+  let(:machine) { raise NotImplementedError, "must override let(:machine)" }
   it "logs transitions" do
     expect(machine).to transition_on(event).to(to_state)
     expect(machine.audit_logs).to contain_exactly(

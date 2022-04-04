@@ -3,6 +3,7 @@
 require "sequel"
 require "state_machines/macro_methods"
 require "state_machines/sequel/spec_helpers"
+require "timecop"
 
 RSpec.describe "sequel-state-machine", :db do
   before(:all) do
@@ -18,7 +19,7 @@ RSpec.describe "sequel-state-machine", :db do
     end
     @db.create_table(:charge_audit_logs) do
       primary_key :id
-      timestamptz :at, null: false
+      timestamp :at, null: false
       text :event, null: false
       text :to_state, null: false
       text :from_state, null: false
@@ -37,21 +38,22 @@ RSpec.describe "sequel-state-machine", :db do
   describe "audit logging" do
     let(:model) { SequelStateMachine::SpecModels::Charge }
 
-    it "logs success transitions" do
+    it "logs successful and unsuccessful transitions" do
       o = model.create
+      expect(o).to not_transition_on(:charge)
       expect(o).to transition_on(:finalize).to("open")
       expect(o).to transition_on(:charge).to("paid")
       expect(o.audit_logs).to contain_exactly(
+        have_attributes(from_state: "pending", to_state: "pending", event: "charge", failed?: true),
         have_attributes(from_state: "pending", to_state: "open", event: "finalize", succeeded?: true),
         have_attributes(from_state: "open", to_state: "paid", event: "charge", succeeded?: true),
       )
-    end
-
-    it "logs unsuccessful transitions" do
-      o = model.create
-      expect(o).to not_transition_on(:charge)
-      expect(o.audit_logs).to contain_exactly(
-        have_attributes(from_state: "pending", to_state: "pending", event: "charge", failed?: true),
+      expect(o.audit_logs_dataset.failed.all).to contain_exactly(
+        have_attributes(from_state: "pending", event: "charge"),
+      )
+      expect(o.audit_logs_dataset.succeeded.all).to contain_exactly(
+        have_attributes(from_state: "pending", event: "finalize"),
+        have_attributes(from_state: "open", event: "charge"),
       )
     end
 
@@ -281,15 +283,62 @@ RSpec.describe "sequel-state-machine", :db do
     let(:instance) { model.new }
 
     it "is valid for valid states" do
-      instance.status = "open"
+      instance.status_col = "open"
       instance.validates_state_machine
       expect(instance.errors).to be_empty
 
-      instance.status = "invalid"
+      instance.status_col = "invalid"
       instance.validates_state_machine
-      expect(instance.errors[:status].first).to eq(
+      expect(instance.errors[:status_col].first).to eq(
         "status 'invalid' must be one of (charged, failed, open, paid, pending)",
       )
     end
+  end
+
+  context "timestamp accessors" do
+    let(:model) { SequelStateMachine::SpecModels::Charge }
+    let(:instance) { model.create }
+
+    it "uses the time of a transition into a state" do
+      instance.update(total: 10.1, charge_status: "pending")
+      t0 = Time.new(2000, 1, 3, 0, 0, 0, "Z")
+      Timecop.freeze(t0) { expect(instance).to transition_on(:finalize).to("open") }
+      t1 = Time.new(2000, 1, 3, 1, 0, 0, "Z")
+      Timecop.freeze(t1) { expect(instance).to transition_on(:charge).to("charged") }
+      t2 = Time.new(2000, 1, 3, 2, 0, 0, "Z")
+      instance.update(charge_status: "paid")
+      Timecop.freeze(t2) { expect(instance).to transition_on(:charge).to("paid") }
+      t3 = Time.new(2000, 1, 3, 3, 0, 0, "Z")
+      Timecop.freeze(t3) { expect(instance).to transition_on(:set_failed).to("failed") }
+      expect(instance).to have_attributes(
+        finalized_at: droptz(t0),
+        charged_at: droptz(t1),
+        paid_at: droptz(t2),
+        failed_at: droptz(t3),
+      )
+    end
+
+    it "uses the latest transition" do
+      instance.update(total: 10.1)
+
+      t0 = Time.new(2000, 1, 3, 0, 0, 0, "Z")
+      Timecop.freeze(t0) { expect(instance).to transition_on(:finalize).to("open") }
+      expect(instance).to have_attributes(finalized_at: droptz(t0))
+
+      instance.update(status_col: "pending")
+      t1 = Time.new(2000, 1, 3, 5, 0, 0, "Z")
+      Timecop.freeze(t1) { expect(instance).to transition_on(:finalize).to("open") }
+      expect(instance.refresh).to have_attributes(finalized_at: droptz(t1))
+    end
+  end
+
+  context "shared examples" do
+    it_behaves_like "a state machine with audit logging", :finalize, "open" do
+      let(:machine) { SequelStateMachine::SpecModels::Charge.create }
+    end
+  end
+
+  def droptz(t)
+    return Time.new(t.year, t.month, t.day, t.hour, t.min, t.sec, nil)
   end
 end

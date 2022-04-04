@@ -36,14 +36,14 @@ module Sequel
 
       module DatasetMethods
         def failed
-          colmap = self.state_machine_column_mappings
+          colmap = self.model.state_machine_column_mappings
           tostate_col = colmap[:to_state]
           fromstate_col = colmap[:from_state]
           return self.where(tostate_col => fromstate_col)
         end
 
         def succeeded
-          colmap = self.state_machine_column_mappings
+          colmap = self.model.state_machine_column_mappings
           tostate_col = colmap[:to_state]
           fromstate_col = colmap[:from_state]
           return self.exclude(tostate_col => fromstate_col)
