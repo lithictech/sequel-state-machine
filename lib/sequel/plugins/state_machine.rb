@@ -14,14 +14,15 @@ module Sequel
       end
 
       def self.configure(model, opts={})
-        col = opts.is_a?(Symbol) ? opts : opts[:status_column]
+        (opts = {status_column: opts}) if opts.is_a?(Symbol)
         model.instance_eval do
           # See state_machine_status_column.
           # We must defer defaulting the value in case the plugin
           # comes ahead of the state  machine (we can see a valid state machine,
           # but the attribute/name will always be :state, due to some configuration
           # order of operations).
-          @sequel_state_machine_status_column = col if col
+          @sequel_state_machine_status_column = opts[:status_column] if opts[:status_column]
+          @sequel_state_machine_audit_logs_association = opts[:audit_logs_association] || :audit_logs
         end
       end
 
@@ -55,16 +56,22 @@ module Sequel
         end
 
         def new_audit_log
-          audit_log_assoc = self.class.association_reflections[:audit_logs]
-          model = Kernel.const_get(audit_log_assoc[:class_name])
-          return model.new
+          assoc_name = self.class.instance_variable_get(:@sequel_state_machine_audit_logs_association)
+          unless (audit_log_assoc = self.class.association_reflections[assoc_name])
+            msg = "Association for audit logs '#{assoc_name}' does not exist. " \
+                  "Your model must have 'one_to_many :audit_logs' for its audit log lines, " \
+                  "or pass the :audit_logs_association parameter to the plugin to define its association name."
+            raise InvalidConfiguration, msg
+          end
+          audit_log_cls = audit_log_assoc[:class] || Kernel.const_get(audit_log_assoc[:class_name])
+          return audit_log_cls.new
         end
 
         def current_audit_log
           if @current_audit_log.nil?
             StateMachines::Sequel.log(self, :debug, "preparing_audit_log", {})
             @current_audit_log = self.new_audit_log
-            @current_audit_log.reason = ""
+            @current_audit_log.sequel_state_machine_set(:reason, "")
           end
           return @current_audit_log
         end
@@ -74,27 +81,27 @@ module Sequel
           current = self.current_audit_log
 
           last_saved = self.audit_logs.find do |a|
-            a.event == transition.event.to_s &&
-              a.from_state == transition.from &&
-              a.to_state == transition.to
+            a.sequel_state_machine_get(:event) == transition.event.to_s &&
+              a.sequel_state_machine_get(:from_state) == transition.from &&
+              a.sequel_state_machine_get(:to_state) == transition.to
           end
           if last_saved
             StateMachines::Sequel.log(self, :debug, "updating_audit_log", {audit_log_id: last_saved.id})
-            last_saved.update(
+            last_saved.update(**last_saved.sequel_state_machine_map_columns(
               at: Time.now,
               actor: StateMachines::Sequel.current_actor,
               messages: current.messages,
               reason: current.reason,
-            )
+            ))
           else
             StateMachines::Sequel.log(self, :debug, "creating_audit_log", {})
-            current.set(
+            current.set(**current.sequel_state_machine_map_columns(
               at: Time.now,
               actor: StateMachines::Sequel.current_actor,
               event: transition.event.to_s,
               from_state: transition.from,
               to_state: transition.to,
-            )
+            ))
             self.add_audit_log(current)
           end
           @current_audit_log = nil
@@ -115,16 +122,16 @@ module Sequel
         def audit_one_off(event, messages, reason: nil)
           messages = [messages] unless messages.respond_to?(:to_ary)
           audlog = self.new_audit_log
-          audlog.set(
-            at: Time.now,
-            event: event,
-            from_state: self.state_machine_status,
-            to_state: self.state_machine_status,
-            messages: audlog.class.state_machine_messages_supports_array ? messages : messages.join("\n"),
-            reason: reason || "",
-            actor: StateMachines::Sequel.current_actor,
-          )
-          self.add_audit_log(audlog)
+          audlog.set(audlog.sequel_state_machine_map_columns(
+                       at: Time.now,
+                       event: event,
+                       from_state: self.state_machine_status,
+                       to_state: self.state_machine_status,
+                       messages: audlog.class.state_machine_messages_supports_array ? messages : messages.join("\n"),
+                       reason: reason || "",
+                       actor: StateMachines::Sequel.current_actor,
+                     ))
+          return self.add_audit_log(audlog)
         end
 
         # Send event with arguments inside of a transaction, save the changes to the receiver,

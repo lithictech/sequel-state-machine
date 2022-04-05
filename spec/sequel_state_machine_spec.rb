@@ -41,6 +41,20 @@ RSpec.describe "sequel-state-machine", :db do
     @db.disconnect
   end
 
+  let(:audit_log_cls) do
+    Class.new(Sequel::Model) do
+      plugin :state_machine_audit_log
+      attr_accessor :at,
+                    :event,
+                    :to_state,
+                    :from_state,
+                    :reason,
+                    :messages,
+                    :actor_id,
+                    :actor
+    end
+  end
+
   describe "configuration" do
     it "can specify the column to use as a kwarg" do
       cls = Class.new do
@@ -127,6 +141,88 @@ RSpec.describe "sequel-state-machine", :db do
       expect do
         cls.new.sequel_state_machine_status
       end.to raise_error(Sequel::Plugins::StateMachine::InvalidConfiguration, /Model must extend/)
+    end
+
+    it "can specify the audit log relationship name" do
+      logcls = audit_log_cls
+      cls = Class.new(Sequel::Model) do
+        plugin :state_machine, audit_logs_association: :audit_lines
+        extend StateMachines::MacroMethods
+        state_machine(:abc) {}
+        one_to_many :audit_lines, class: logcls
+      end
+      instance = cls.new
+      instance.abc = "foo"
+      expect(instance.sequel_state_machine_status).to eq("foo")
+      expect(instance.current_audit_log).to be_a(audit_log_cls)
+    end
+
+    it "errors clearly if the audit relationship does not exist" do
+      cls = Class.new(Sequel::Model) do
+        plugin :state_machine
+        extend StateMachines::MacroMethods
+        state_machine(:abc) {}
+      end
+      expect do
+        cls.new.current_audit_log
+      end.to raise_error(Sequel::Plugins::StateMachine::InvalidConfiguration, /Association for audit logs/)
+    end
+
+    it "defaults the audit log relationship to 'audit_logs'" do
+      logcls = audit_log_cls
+      cls = Class.new(Sequel::Model) do
+        plugin :state_machine
+        extend StateMachines::MacroMethods
+        state_machine(:abc) {}
+        one_to_many :audit_logs, class: logcls
+      end
+      instance = cls.new
+      instance.abc = "foo"
+      expect(instance.sequel_state_machine_status).to eq("foo")
+      expect(instance.current_audit_log).to be_a(audit_log_cls)
+    end
+
+    it "can override audit_logs, new_audit_log, and add_audit_log" do
+      logcls = audit_log_cls
+      cls = Class.new(Sequel::Model) do
+        plugin :state_machine
+        extend StateMachines::MacroMethods
+        state_machine(:abc) {}
+        attr_accessor :audit_logs
+
+        define_method(:audit_logs) do
+          @audit_logs ||= []
+          return @audit_logs
+        end
+        define_method(:new_audit_log) do
+          return logcls.new
+        end
+        define_method(:add_audit_log) do |lg|
+          self.audit_logs << lg
+        end
+      end
+      instance = cls.new
+      expect(instance.audit_logs).to be_empty
+      current = instance.current_audit_log
+      expect(current).to be_a(audit_log_cls)
+      instance.audit_one_off("hello", [])
+      expect(instance.audit_logs).to contain_exactly(have_attributes(event: "hello"))
+    end
+
+    it "can specify multiple arguments" do
+      logcls = audit_log_cls
+      cls = Class.new(Sequel::Model) do
+        plugin :state_machine, status_column: :xyz, audit_logs_association: :audit_lines
+        extend StateMachines::MacroMethods
+        attr_accessor :abc, :xyz
+
+        state_machine(:abc) {}
+        one_to_many :audit_lines, class: logcls
+      end
+      instance = cls.new
+      instance.xyz = "foo"
+      expect(instance.sequel_state_machine_status).to eq("foo")
+      expect(instance.current_audit_log).to be_a(audit_log_cls)
     end
   end
 
@@ -222,6 +318,59 @@ RSpec.describe "sequel-state-machine", :db do
           messages: "my message",
         ),
       )
+    end
+
+    it "can map column names as part of plugin config" do
+      logcls = Class.new(Sequel::Model) do
+        plugin :state_machine_audit_log, column_mappings: {
+          at: :at2,
+          event: :event2,
+          to_state: :to_state2,
+          from_state: :from_state2,
+          reason: :reason2,
+          messages: :messages2,
+          actor_id: :actor_id2,
+          actor: :actor2,
+        }
+        attr_accessor :at2,
+                      :event2,
+                      :to_state2,
+                      :from_state2,
+                      :reason2,
+                      :messages2,
+                      :actor_id2,
+                      :actor2
+      end
+      cls = Class.new(Sequel::Model) do
+        plugin :state_machine
+        extend StateMachines::MacroMethods
+        state_machine(:abc) {}
+        one_to_many :audit_logs, class: logcls
+
+        def add_audit_log(x)
+          return x
+        end
+      end
+      instance = cls.new
+      log = instance.audit_one_off("hello", "msg")
+      expect(log).to have_attributes(reason2: "", messages2: ["msg"], event2: "hello")
+    end
+
+    it "errors if the column remapping includes only one or the other of actor and actor_id" do
+      expect do
+        Class.new(Sequel::Model) do
+          plugin :state_machine_audit_log, column_mappings: {
+            actor_id: :actor_id2,
+          }
+        end
+      end.to raise_error(Sequel::Plugins::StateMachine::InvalidConfiguration, /Remapping columns :actor and /)
+      expect do
+        Class.new(Sequel::Model) do
+          plugin :state_machine_audit_log, column_mappings: {
+            actor: :actor2,
+          }
+        end
+      end.to raise_error(Sequel::Plugins::StateMachine::InvalidConfiguration, /Remapping columns :actor and /)
     end
 
     describe "actor management" do

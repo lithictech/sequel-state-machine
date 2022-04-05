@@ -16,16 +16,26 @@ module Sequel
           reason: :reason,
           messages: :messages,
           actor_id: :actor_id,
+          actor: :actor,
         }.freeze,
       }.freeze
       def self.configure(model, opts=DEFAULT_OPTIONS)
         opts = DEFAULT_OPTIONS.merge(opts)
-        model.state_machine_column_mappings = opts[:column_mappings]
+        colmap = opts[:column_mappings]
+        actor_key_mismatch = (colmap.key?(:actor) && !colmap.key?(:actor_id)) ||
+          (!colmap.key?(:actor) && colmap.key?(:actor_id))
+        if actor_key_mismatch
+          msg = "Remapping columns :actor and :actor_id must both be supplied"
+          raise Sequel::Plugins::StateMachine::InvalidConfiguration, msg
+        end
+        model.state_machine_column_mappings = colmap
         msgarray = opts[:messages_supports_array] || true
         if msgarray == :undefined
           msgcol = model.state_machine_column_mappings[:messages]
-          dbt = model.db_schema[msgcol][:db_type]
-          msgarray = dbt.include?("json") || dbt.include?("[]")
+          if model.db_schema && model.db_schema[msgcol]
+            dbt = model.db_schema[msgcol][:db_type]
+            msgarray = dbt.include?("json") || dbt.include?("[]")
+          end
         end
         model.state_machine_messages_supports_array = msgarray
       end
@@ -52,8 +62,8 @@ module Sequel
 
       module InstanceMethods
         def failed?
-          from_state = self._get_mapped_column_value(:from_state)
-          to_state = self._get_mapped_column_value(:to_state)
+          from_state = self.sequel_state_machine_get(:from_state)
+          to_state = self.sequel_state_machine_get(:to_state)
           return from_state == to_state
         end
 
@@ -62,12 +72,21 @@ module Sequel
         end
 
         def full_message
-          msg = self._get_mapped_column_value(:messages)
+          msg = self.sequel_state_machine_get(:messages)
           return self.class.state_machine_messages_supports_array ? msg.join(", ") : msg
         end
 
-        def _get_mapped_column_value(col)
-          return self[self.class.state_machine_column_mappings[col]]
+        def sequel_state_machine_get(unmapped)
+          return self[self.class.state_machine_column_mappings[unmapped]]
+        end
+
+        def sequel_state_machine_set(unmapped, value)
+          self[self.class.state_machine_column_mappings[unmapped]] = value
+        end
+
+        def sequel_state_machine_map_columns(**kw)
+          mappings = self.class.state_machine_column_mappings
+          return kw.transform_keys { |k| mappings[k] or raise KeyError, "field #{k} unmapped in #{mappings}" }
         end
       end
     end
