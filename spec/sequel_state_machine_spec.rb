@@ -6,6 +6,12 @@ require "state_machines/sequel/spec_helpers"
 require "timecop"
 
 RSpec.describe "sequel-state-machine", :db do
+  def configure_cls(cls, *args)
+    Sequel::Plugins::StateMachine.apply(cls, *args)
+    Sequel::Plugins::StateMachine.configure(cls, *args)
+    return cls
+  end
+
   before(:all) do
     @db = Sequel.sqlite
     @db.create_table(:users) do
@@ -36,14 +42,28 @@ RSpec.describe "sequel-state-machine", :db do
   end
 
   describe "configuration" do
-    it "can specify the column to use" do
+    it "can specify the column to use as a kwarg" do
       cls = Class.new do
         extend StateMachines::MacroMethods
         attr_accessor :abc
 
-        state_machine(:abc, initial: :begin) {}
+        state_machine(:xyz) {}
       end
-      Sequel::Plugins::StateMachine.apply(cls, status_column: :abc)
+      configure_cls(cls, status_column: :abc)
+      cls.include(Sequel::Plugins::StateMachine::InstanceMethods)
+      instance = cls.new
+      instance.abc = "foo"
+      expect(instance.sequel_state_machine_status).to eq("foo")
+    end
+
+    it "can specify the column to use as a positional argument" do
+      cls = Class.new do
+        extend StateMachines::MacroMethods
+        attr_accessor :abc
+
+        state_machine(:xyz) {}
+      end
+      configure_cls(cls, :abc)
       cls.include(Sequel::Plugins::StateMachine::InstanceMethods)
       instance = cls.new
       instance.abc = "foo"
@@ -55,13 +75,13 @@ RSpec.describe "sequel-state-machine", :db do
         extend StateMachines::MacroMethods
         attr_accessor :xyz
 
-        state_machine(:abc, initial: :begin) {}
+        state_machine(:abc) {}
 
         def _state_value_attr
           return :xyz
         end
       end
-      Sequel::Plugins::StateMachine.apply(cls)
+      configure_cls(cls)
       cls.include(Sequel::Plugins::StateMachine::InstanceMethods)
       instance = cls.new
       instance.xyz = "foo"
@@ -73,9 +93,9 @@ RSpec.describe "sequel-state-machine", :db do
         extend StateMachines::MacroMethods
         attr_accessor :abc
 
-        state_machine(:abc, initial: :begin) {}
+        state_machine(:abc) {}
       end
-      Sequel::Plugins::StateMachine.apply(cls)
+      configure_cls(cls)
       cls.include(Sequel::Plugins::StateMachine::InstanceMethods)
       instance = cls.new
       instance.abc = "foo"
@@ -87,12 +107,10 @@ RSpec.describe "sequel-state-machine", :db do
         extend StateMachines::MacroMethods
         attr_accessor :abc, :xyz
 
-        state_machine :abc do
-        end
-        state_machine :xyz do
-        end
+        state_machine(:abc) {}
+        state_machine(:xyz) {}
       end
-      Sequel::Plugins::StateMachine.apply(cls)
+      configure_cls(cls)
       cls.include(Sequel::Plugins::StateMachine::InstanceMethods)
       expect do
         cls.new.sequel_state_machine_status
@@ -104,7 +122,7 @@ RSpec.describe "sequel-state-machine", :db do
         extend StateMachines::MacroMethods
         attr_accessor :abc, :xyz
       end
-      Sequel::Plugins::StateMachine.apply(cls)
+      configure_cls(cls)
       cls.include(Sequel::Plugins::StateMachine::InstanceMethods)
       expect do
         cls.new.sequel_state_machine_status
@@ -314,29 +332,30 @@ RSpec.describe "sequel-state-machine", :db do
 
   describe "valid_state_path_through?" do
     require "sequel/plugins/state_machine"
-    test_cls = Class.new do
-      extend StateMachines::MacroMethods
-      include Sequel::Plugins::StateMachine::InstanceMethods
-      attr_accessor :state
+    let(:test_cls) do
+      c = Class.new do
+        extend StateMachines::MacroMethods
+        include Sequel::Plugins::StateMachine::InstanceMethods
+        attr_accessor :state
 
-      state_machine :state, initial: :created do
-        state :begin, :middle, :end
+        state_machine :state, initial: :created do
+          state :begin, :middle, :end
 
-        event :move_begin do
-          transition begin: :middle
-        end
+          event :move_begin do
+            transition begin: :middle
+          end
 
-        event :move_middle do
-          transition middle: :end
-        end
+          event :move_middle do
+            transition middle: :end
+          end
 
-        event :move_any_to_end do
-          transition all => :end
+          event :move_any_to_end do
+            transition all => :end
+          end
         end
       end
+      configure_cls(c)
     end
-    Sequel::Plugins::StateMachine.apply(test_cls)
-    Sequel::Plugins::StateMachine.configure(test_cls)
 
     let(:instance) { test_cls.new }
 
@@ -357,7 +376,7 @@ RSpec.describe "sequel-state-machine", :db do
     end
   end
 
-  context "validates_state_machine" do
+  describe "validates_state_machine" do
     let(:model) { SequelStateMachine::SpecModels::Charge }
     let(:instance) { model.new }
 
@@ -374,7 +393,7 @@ RSpec.describe "sequel-state-machine", :db do
     end
   end
 
-  context "timestamp accessors" do
+  describe "timestamp accessors" do
     let(:model) { SequelStateMachine::SpecModels::Charge }
     let(:instance) { model.create }
 
@@ -411,7 +430,7 @@ RSpec.describe "sequel-state-machine", :db do
     end
   end
 
-  context "shared examples" do
+  describe "shared examples" do
     it_behaves_like "a state machine with audit logging", :finalize, "open" do
       let(:machine) { SequelStateMachine::SpecModels::Charge.create }
     end

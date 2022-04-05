@@ -14,7 +14,7 @@ module Sequel
       end
 
       def self.configure(model, opts={})
-        col = opts.is_a?(Symbol) ? opts : nil
+        col = opts.is_a?(Symbol) ? opts : opts[:status_column]
         model.instance_eval do
           # See state_machine_status_column.
           # We must defer defaulting the value in case the plugin
