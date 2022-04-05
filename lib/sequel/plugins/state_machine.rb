@@ -2,6 +2,7 @@
 
 require "sequel"
 require "sequel/model"
+require "set"
 require "state_machines/sequel"
 
 module Sequel
@@ -14,19 +15,21 @@ module Sequel
       end
 
       def self.configure(model, opts={})
-        col = opts.is_a?(Symbol) ? opts : nil
+        (opts = {status_column: opts}) if opts.is_a?(Symbol)
         model.instance_eval do
           # See state_machine_status_column.
           # We must defer defaulting the value in case the plugin
           # comes ahead of the state  machine (we can see a valid state machine,
           # but the attribute/name will always be :state, due to some configuration
           # order of operations).
-          @sequel_state_machine_status_column = col if col
+          @sequel_state_machine_status_column = opts[:status_column] if opts[:status_column]
+          @sequel_state_machine_audit_logs_association = opts[:audit_logs_association] || :audit_logs
         end
       end
 
       module InstanceMethods
-        private def state_machine_status_column
+        private def state_machine_status_column(machine=nil)
+          return machine if machine
           col = self.class.instance_variable_get(:@sequel_state_machine_status_column)
           return col unless col.nil?
           if self.respond_to?(:_state_value_attr)
@@ -37,67 +40,81 @@ module Sequel
             msg = "Model must extend StateMachines::MacroMethods and have one state_machine."
             raise InvalidConfiguration, msg
           end
-          if self.class.state_machines.length > 1
-            msg = "Cannot use sequel-state-machine with multiple state machines. " \
-                  "Please file an issue at https://github.com/lithictech/sequel-state-machine/issues " \
-                  "if you need this capability."
-            raise InvalidConfiguration, msg
+          if self.class.state_machines.length > 1 && machine.nil?
+            msg = "You must provide the :machine keyword argument when working multiple state machines."
+            raise ArgumentError, msg
           end
           self.class.instance_variable_set(:@sequel_state_machine_status_column, self.class.state_machine.attribute)
         end
 
-        private def state_machine_status
-          return self.send(self.state_machine_status_column)
-        end
-
-        def sequel_state_machine_status
-          return state_machine_status
+        def sequel_state_machine_status(machine=nil)
+          return self.send(self.state_machine_status_column(machine))
         end
 
         def new_audit_log
-          audit_log_assoc = self.class.association_reflections[:audit_logs]
-          model = Kernel.const_get(audit_log_assoc[:class_name])
-          return model.new
+          assoc_name = self.class.instance_variable_get(:@sequel_state_machine_audit_logs_association)
+          unless (audit_log_assoc = self.class.association_reflections[assoc_name])
+            msg = "Association for audit logs '#{assoc_name}' does not exist. " \
+                  "Your model must have 'one_to_many :audit_logs' for its audit log lines, " \
+                  "or pass the :audit_logs_association parameter to the plugin to define its association name."
+            raise InvalidConfiguration, msg
+          end
+          audit_log_cls = audit_log_assoc[:class] || Kernel.const_get(audit_log_assoc[:class_name])
+          return audit_log_cls.new
         end
 
-        def current_audit_log
-          if @current_audit_log.nil?
+        def current_audit_log(machine: nil)
+          @current_audit_logs ||= {}
+          alog = @current_audit_logs[machine]
+          if alog.nil?
             StateMachines::Sequel.log(self, :debug, "preparing_audit_log", {})
-            @current_audit_log = self.new_audit_log
-            @current_audit_log.reason = ""
+            alog = self.new_audit_log
+            if machine
+              machine_name_col = alog.class.state_machine_column_mappings[:machine_name]
+              unless alog.respond_to?(machine_name_col)
+                msg = "Audit logs must have a :machine_name field for multi-machine models or if specifying :machine."
+                raise InvalidConfiguration, msg
+              end
+              alog.sequel_state_machine_set(:machine_name, machine)
+            end
+            @current_audit_logs[machine] = alog
+            alog.sequel_state_machine_set(:reason, "")
           end
-          return @current_audit_log
+          return alog
         end
 
         def commit_audit_log(transition)
-          StateMachines::Sequel.log(self, :debug, "committing_audit_log", {transition: transition})
-          current = self.current_audit_log
+          machine = self.class.state_machines.length > 1 ? transition.machine.name : nil
+          StateMachines::Sequel.log(
+            self, :debug, "committing_audit_log", {transition: transition, state_machine: machine},
+          )
+          current = self.current_audit_log(machine: machine)
 
           last_saved = self.audit_logs.find do |a|
-            a.event == transition.event.to_s &&
-              a.from_state == transition.from &&
-              a.to_state == transition.to
+            a.sequel_state_machine_get(:event) == transition.event.to_s &&
+              a.sequel_state_machine_get(:from_state) == transition.from &&
+              a.sequel_state_machine_get(:to_state) == transition.to
           end
           if last_saved
             StateMachines::Sequel.log(self, :debug, "updating_audit_log", {audit_log_id: last_saved.id})
-            last_saved.update(
+            last_saved.update(**last_saved.sequel_state_machine_map_columns(
               at: Time.now,
               actor: StateMachines::Sequel.current_actor,
               messages: current.messages,
               reason: current.reason,
-            )
+            ))
           else
             StateMachines::Sequel.log(self, :debug, "creating_audit_log", {})
-            current.set(
+            current.set(**current.sequel_state_machine_map_columns(
               at: Time.now,
               actor: StateMachines::Sequel.current_actor,
               event: transition.event.to_s,
               from_state: transition.from,
               to_state: transition.to,
-            )
+            ))
             self.add_audit_log(current)
           end
-          @current_audit_log = nil
+          @current_audit_logs[machine] = nil
         end
 
         def audit(message, reason: nil)
@@ -110,21 +127,31 @@ module Sequel
             audlog.messages += (audlog.messages.empty? ? message : (message + "\n"))
           end
           audlog.reason = reason if reason
+          return audlog
         end
 
-        def audit_one_off(event, messages, reason: nil)
+        def audit_one_off(event, messages, reason: nil, machine: nil)
           messages = [messages] unless messages.respond_to?(:to_ary)
           audlog = self.new_audit_log
-          audlog.set(
+          mapped_values = audlog.sequel_state_machine_map_columns(
             at: Time.now,
             event: event,
-            from_state: self.state_machine_status,
-            to_state: self.state_machine_status,
+            from_state: self.sequel_state_machine_status(machine),
+            to_state: self.sequel_state_machine_status(machine),
             messages: audlog.class.state_machine_messages_supports_array ? messages : messages.join("\n"),
             reason: reason || "",
             actor: StateMachines::Sequel.current_actor,
+            machine_name: machine,
           )
-          self.add_audit_log(audlog)
+          audlog.set(mapped_values)
+          return self.add_audit_log(audlog)
+        end
+
+        # Return audit logs for the given state machine name.
+        # Only useful for multi-state-machine models.
+        def audit_logs_for(machine)
+          lines = self.send(self.class.instance_variable_get(:@sequel_state_machine_audit_logs_association))
+          return lines.select { |ln| ln.sequel_state_machine_get(:machine_name) == machine.to_s }
         end
 
         # Send event with arguments inside of a transaction, save the changes to the receiver,
@@ -159,10 +186,12 @@ module Sequel
         end
 
         # Return true if the given event can be transitioned into by the current state.
-        def valid_state_path_through?(event)
-          current_state_str = self.state_machine_status.to_s
+        def valid_state_path_through?(event, machine: nil)
+          current_state_str = self.sequel_state_machine_status(machine).to_s
           current_state_sym = current_state_str.to_sym
-          event_obj = self.class.state_machine.events[event] or raise "Invalid event #{event}"
+          sm = find_state_machine(machine)
+          event_obj = sm.events[event] or
+            raise ArgumentError, "Invalid event #{event} (available #{sm.name} events: #{sm.events.keys.join(', ')})"
           event_obj.branches.each do |branch|
             branch.state_requirements.each do |state_req|
               next unless (from = state_req[:from])
@@ -172,12 +201,24 @@ module Sequel
           return false
         end
 
-        def validates_state_machine
-          states = self.class.state_machine.states.map(&:value)
-          state = self.state_machine_status
+        def validates_state_machine(machine: nil)
+          state_machine = find_state_machine(machine)
+          states = state_machine.states.map(&:value)
+          state = self.sequel_state_machine_status(state_machine.attribute)
           return if states.include?(state)
-          self.errors.add(self.state_machine_status_column,
+          self.errors.add(self.state_machine_status_column(machine),
                           "state '#{state}' must be one of (#{states.sort.join(', ')})",)
+        end
+
+        private def find_state_machine(machine)
+          machines = self.class.state_machines
+          raise InvalidConfiguration, "no state machines defined" if machines.empty?
+          if machine
+            m = machines[machine]
+            raise ArgumentError, "no state machine named #{machine}" if m.nil?
+            return m
+          end
+          return machines.first[1]
         end
       end
 

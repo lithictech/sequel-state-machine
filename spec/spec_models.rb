@@ -77,5 +77,59 @@ module SequelStateMachine
       many_to_one :charge, class: "SequelStateMachine::SpecModels::Charge"
       many_to_one :actor, class: "SequelStateMachine::SpecModels::User"
     end
+
+    class MultiMachine < Sequel::Model(:multi_machines)
+      extend StateMachines::MacroMethods
+      plugin :state_machine
+      one_to_many :audit_logs, class: "SequelStateMachine::SpecModels::MultiMachineAuditLog"
+      state_machine :machine1, initial: :m1state1 do
+        state :m1state1,
+              :m1state2,
+              :m1state3
+
+        event :gom1state2 do
+          transition m1state1: :m1state2
+        end
+        event :gom1state3 do
+          transition m1state2: :m1state3
+        end
+        after_transition(&:commit_audit_log)
+        after_failure(&:commit_audit_log)
+      end
+      state_machine :machine2, initial: :m2state1 do
+        state :m2state1,
+              :m2state2,
+              :m2state3
+
+        event :gom2state2 do
+          transition m2state1: :m2state2
+        end
+        event :gom2state3 do
+          transition m2state2: :m2state3
+        end
+        after_transition(&:commit_audit_log)
+        after_failure(&:commit_audit_log)
+      end
+
+      timestamp_accessors(
+        [
+          [{to: "m1state2"}, :m1state2_at],
+          [{to: "m1state3"}, :m1state3_at],
+          [{to: "m2state2"}, :m2state2_at],
+          [{to: "m2state3"}, :m2state3_at],
+        ],
+      )
+      def validate
+        super
+        self.validates_state_machine(machine: :machine1)
+        self.validates_state_machine(machine: :machine2)
+      end
+    end
+
+    class MultiMachineAuditLog < Sequel::Model(:multi_machine_audit_logs)
+      plugin :state_machine_audit_log
+      many_to_one :multi_machine, class: "SequelStateMachine::SpecModels::MultiMachine"
+      many_to_one :actor, class: "SequelStateMachine::SpecModels::User"
+    end
   end
 end

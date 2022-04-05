@@ -4,9 +4,15 @@ require "rspec"
 
 RSpec::Matchers.define :transition_on do |event|
   match do |receiver|
-    raise 'must provide a "to" state' if (@to || "").to_s.empty?
+    raise ArgumentError, "must use :to to provide a target state" if (@to || "").to_s.empty?
+    raise ArgumentError, "must use :of_machine for use with multiple state machines" if
+      @machine.nil? && receiver.class.state_machines.length > 1
     receiver.send(event, *@args)
-    @to == receiver.send(:state_machine_status)
+    @to == receiver.send(@machine || :sequel_state_machine_status)
+  end
+
+  chain :of_machine do |col|
+    @machine = col
   end
 
   chain :to do |to_state|
