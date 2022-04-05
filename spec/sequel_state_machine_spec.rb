@@ -3,30 +3,31 @@
 require "sequel"
 require "state_machines/macro_methods"
 require "state_machines/sequel/spec_helpers"
+require "timecop"
 
 RSpec.describe "sequel-state-machine", :db do
   before(:all) do
     @db = Sequel.sqlite
-    @db.create_table(:spec_model_users) do
+    @db.create_table(:users) do
       primary_key :id
     end
-    @db.create_table(:spec_models) do
+    @db.create_table(:charges) do
       primary_key :id
-      text :status, null: false, default: "created"
+      text :status_col, null: false, default: "created"
       real :total, null: false, default: 0
       text :charge_status, null: false, default: ""
     end
-    @db.create_table(:spec_model_audit_logs) do
+    @db.create_table(:charge_audit_logs) do
       primary_key :id
-      timestamptz :at, null: false
+      timestamp :at, null: false
       text :event, null: false
       text :to_state, null: false
       text :from_state, null: false
       text :reason, null: false, default: ""
       text :messages, default: ""
-      foreign_key :spec_model_id, :spec_models, null: false, on_delete: :cascade
-      index :spec_model_id
-      foreign_key :actor_id, :spec_model_users, null: true, on_delete: :set_null
+      foreign_key :charge_id, :charges, null: false, on_delete: :cascade
+      index :charge_id
+      foreign_key :actor_id, :users, null: true, on_delete: :set_null
     end
     require_relative "spec_models"
   end
@@ -34,24 +35,102 @@ RSpec.describe "sequel-state-machine", :db do
     @db.disconnect
   end
 
-  let(:model) { SequelStateMachine::SpecModel }
+  describe "configuration" do
+    it "can specify the column to use" do
+      cls = Class.new do
+        extend StateMachines::MacroMethods
+        attr_accessor :abc
+
+        state_machine(:abc, initial: :begin) {}
+      end
+      Sequel::Plugins::StateMachine.apply(cls, status_column: :abc)
+      cls.include(Sequel::Plugins::StateMachine::InstanceMethods)
+      instance = cls.new
+      instance.abc = "foo"
+      expect(instance.sequel_state_machine_status).to eq("foo")
+    end
+
+    it "can specify the column to use using the legacy _attr field" do
+      cls = Class.new do
+        extend StateMachines::MacroMethods
+        attr_accessor :xyz
+
+        state_machine(:abc, initial: :begin) {}
+
+        def _state_value_attr
+          return :xyz
+        end
+      end
+      Sequel::Plugins::StateMachine.apply(cls)
+      cls.include(Sequel::Plugins::StateMachine::InstanceMethods)
+      instance = cls.new
+      instance.xyz = "foo"
+      expect(instance.sequel_state_machine_status).to eq("foo")
+    end
+
+    it "defaults to the first state machine status column" do
+      cls = Class.new do
+        extend StateMachines::MacroMethods
+        attr_accessor :abc
+
+        state_machine(:abc, initial: :begin) {}
+      end
+      Sequel::Plugins::StateMachine.apply(cls)
+      cls.include(Sequel::Plugins::StateMachine::InstanceMethods)
+      instance = cls.new
+      instance.abc = "foo"
+      expect(instance.sequel_state_machine_status).to eq("foo")
+    end
+
+    it "errors if there are multiple state machines" do
+      cls = Class.new do
+        extend StateMachines::MacroMethods
+        attr_accessor :abc, :xyz
+
+        state_machine :abc do
+        end
+        state_machine :xyz do
+        end
+      end
+      Sequel::Plugins::StateMachine.apply(cls)
+      cls.include(Sequel::Plugins::StateMachine::InstanceMethods)
+      expect do
+        cls.new.sequel_state_machine_status
+      end.to raise_error(Sequel::Plugins::StateMachine::InvalidConfiguration, /with multiple state machines/)
+    end
+
+    it "errors if there are no state machines" do
+      cls = Class.new do
+        extend StateMachines::MacroMethods
+        attr_accessor :abc, :xyz
+      end
+      Sequel::Plugins::StateMachine.apply(cls)
+      cls.include(Sequel::Plugins::StateMachine::InstanceMethods)
+      expect do
+        cls.new.sequel_state_machine_status
+      end.to raise_error(Sequel::Plugins::StateMachine::InvalidConfiguration, /Model must extend/)
+    end
+  end
 
   describe "audit logging" do
-    it "logs success transitions" do
+    let(:model) { SequelStateMachine::SpecModels::Charge }
+
+    it "logs successful and unsuccessful transitions" do
       o = model.create
+      expect(o).to not_transition_on(:charge)
       expect(o).to transition_on(:finalize).to("open")
       expect(o).to transition_on(:charge).to("paid")
       expect(o.audit_logs).to contain_exactly(
+        have_attributes(from_state: "pending", to_state: "pending", event: "charge", failed?: true),
         have_attributes(from_state: "pending", to_state: "open", event: "finalize", succeeded?: true),
         have_attributes(from_state: "open", to_state: "paid", event: "charge", succeeded?: true),
       )
-    end
-
-    it "logs unsuccessful transitions" do
-      o = model.create
-      expect(o).to not_transition_on(:charge)
-      expect(o.audit_logs).to contain_exactly(
-        have_attributes(from_state: "pending", to_state: "pending", event: "charge", failed?: true),
+      expect(o.audit_logs_dataset.failed.all).to contain_exactly(
+        have_attributes(from_state: "pending", event: "charge"),
+      )
+      expect(o.audit_logs_dataset.succeeded.all).to contain_exactly(
+        have_attributes(from_state: "pending", event: "finalize"),
+        have_attributes(from_state: "open", event: "charge"),
       )
     end
 
@@ -128,7 +207,8 @@ RSpec.describe "sequel-state-machine", :db do
     end
 
     describe "actor management" do
-      let(:user) { SequelStateMachine::SpecModel::User.create }
+      let(:model) { SequelStateMachine::SpecModels::Charge }
+      let(:user) { SequelStateMachine::SpecModels::User.create }
 
       it "captures the current actor during one-offs" do
         o = model.create
@@ -178,6 +258,7 @@ RSpec.describe "sequel-state-machine", :db do
   end
 
   describe "process" do
+    let(:model) { SequelStateMachine::SpecModels::Charge }
     let(:instance) { model.create }
 
     it "saves the model and returns true on a successful transition" do
@@ -192,6 +273,7 @@ RSpec.describe "sequel-state-machine", :db do
   end
 
   describe "must_process" do
+    let(:model) { SequelStateMachine::SpecModels::Charge }
     let(:instance) { model.create }
 
     it "returns the receiver if the event succeeds" do
@@ -207,11 +289,14 @@ RSpec.describe "sequel-state-machine", :db do
       instance.audit("newer")
       expect do
         instance.must_process(:charge)
-      end.to raise_error("SequelStateMachine::SpecModel[#{instance.id}] failed to transition on charge: hellonewer")
+      end.to raise_error(
+        "SequelStateMachine::SpecModels::Charge[#{instance.id}] failed to transition on charge: hellonewer",
+      )
     end
   end
 
   describe "process_if" do
+    let(:model) { SequelStateMachine::SpecModels::Charge }
     let(:instance) { model.create }
 
     it "returns the receiver if the block is true and processing succeeds" do
@@ -242,7 +327,7 @@ RSpec.describe "sequel-state-machine", :db do
         end
 
         event :move_middle do
-          transition((all - [:begin, :end]) => :end)
+          transition middle: :end
         end
 
         event :move_any_to_end do
@@ -250,6 +335,8 @@ RSpec.describe "sequel-state-machine", :db do
         end
       end
     end
+    Sequel::Plugins::StateMachine.apply(test_cls)
+    Sequel::Plugins::StateMachine.configure(test_cls)
 
     let(:instance) { test_cls.new }
 
@@ -271,18 +358,66 @@ RSpec.describe "sequel-state-machine", :db do
   end
 
   context "validates_state_machine" do
+    let(:model) { SequelStateMachine::SpecModels::Charge }
     let(:instance) { model.new }
 
     it "is valid for valid states" do
-      instance.status = "open"
+      instance.status_col = "open"
       instance.validates_state_machine
       expect(instance.errors).to be_empty
 
-      instance.status = "invalid"
+      instance.status_col = "invalid"
       instance.validates_state_machine
-      expect(instance.errors[:status].first).to eq(
-        "status 'invalid' must be one of (charged, failed, open, paid, pending)",
+      expect(instance.errors[:status_col].first).to eq(
+        "state 'invalid' must be one of (charged, failed, open, paid, pending)",
       )
     end
+  end
+
+  context "timestamp accessors" do
+    let(:model) { SequelStateMachine::SpecModels::Charge }
+    let(:instance) { model.create }
+
+    it "uses the time of a transition into a state" do
+      instance.update(total: 10.1, charge_status: "pending")
+      t0 = Time.new(2000, 1, 3, 0, 0, 0, "Z")
+      Timecop.freeze(t0) { expect(instance).to transition_on(:finalize).to("open") }
+      t1 = Time.new(2000, 1, 3, 1, 0, 0, "Z")
+      Timecop.freeze(t1) { expect(instance).to transition_on(:charge).to("charged") }
+      t2 = Time.new(2000, 1, 3, 2, 0, 0, "Z")
+      instance.update(charge_status: "paid")
+      Timecop.freeze(t2) { expect(instance).to transition_on(:charge).to("paid") }
+      t3 = Time.new(2000, 1, 3, 3, 0, 0, "Z")
+      Timecop.freeze(t3) { expect(instance).to transition_on(:set_failed).to("failed") }
+      expect(instance).to have_attributes(
+        finalized_at: droptz(t0),
+        charged_at: droptz(t1),
+        paid_at: droptz(t2),
+        failed_at: droptz(t3),
+      )
+    end
+
+    it "uses the latest transition" do
+      instance.update(total: 10.1)
+
+      t0 = Time.new(2000, 1, 3, 0, 0, 0, "Z")
+      Timecop.freeze(t0) { expect(instance).to transition_on(:finalize).to("open") }
+      expect(instance).to have_attributes(finalized_at: droptz(t0))
+
+      instance.update(status_col: "pending")
+      t1 = Time.new(2000, 1, 3, 5, 0, 0, "Z")
+      Timecop.freeze(t1) { expect(instance).to transition_on(:finalize).to("open") }
+      expect(instance.refresh).to have_attributes(finalized_at: droptz(t1))
+    end
+  end
+
+  context "shared examples" do
+    it_behaves_like "a state machine with audit logging", :finalize, "open" do
+      let(:machine) { SequelStateMachine::SpecModels::Charge.create }
+    end
+  end
+
+  def droptz(t)
+    return Time.new(t.year, t.month, t.day, t.hour, t.min, t.sec, nil)
   end
 end

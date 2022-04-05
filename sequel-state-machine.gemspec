@@ -25,6 +25,8 @@ Gem::Specification.new do |s|
   s.add_development_dependency("rubocop-performance", "~> 1.10")
   s.add_development_dependency("rubocop-sequel", "~> 0.2")
   s.add_development_dependency("sequel", "~> 5.0")
+  s.add_development_dependency("simplecov", "~> 0")
   s.add_development_dependency("sqlite3", "~> 1")
   s.add_development_dependency("state_machines", "~> 0")
+  s.add_development_dependency("timecop", "~> 0")
 end

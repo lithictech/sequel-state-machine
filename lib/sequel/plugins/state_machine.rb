@@ -7,7 +7,53 @@ require "state_machines/sequel"
 module Sequel
   module Plugins
     module StateMachine
+      class InvalidConfiguration < RuntimeError; end
+
+      def self.apply(_model, _opts={})
+        nil
+      end
+
+      def self.configure(model, opts={})
+        col = opts.is_a?(Symbol) ? opts : nil
+        model.instance_eval do
+          # See state_machine_status_column.
+          # We must defer defaulting the value in case the plugin
+          # comes ahead of the state  machine (we can see a valid state machine,
+          # but the attribute/name will always be :state, due to some configuration
+          # order of operations).
+          @sequel_state_machine_status_column = col if col
+        end
+      end
+
       module InstanceMethods
+        private def state_machine_status_column
+          col = self.class.instance_variable_get(:@sequel_state_machine_status_column)
+          return col unless col.nil?
+          if self.respond_to?(:_state_value_attr)
+            self.class.instance_variable_set(:@sequel_state_machine_status_column, self._state_value_attr)
+            return self._state_value_attr
+          end
+          if !self.class.respond_to?(:state_machines) || self.class.state_machines.empty?
+            msg = "Model must extend StateMachines::MacroMethods and have one state_machine."
+            raise InvalidConfiguration, msg
+          end
+          if self.class.state_machines.length > 1
+            msg = "Cannot use sequel-state-machine with multiple state machines. " \
+                  "Please file an issue at https://github.com/lithictech/sequel-state-machine/issues " \
+                  "if you need this capability."
+            raise InvalidConfiguration, msg
+          end
+          self.class.instance_variable_set(:@sequel_state_machine_status_column, self.class.state_machine.attribute)
+        end
+
+        private def state_machine_status
+          return self.send(self.state_machine_status_column)
+        end
+
+        def sequel_state_machine_status
+          return state_machine_status
+        end
+
         def new_audit_log
           audit_log_assoc = self.class.association_reflections[:audit_logs]
           model = Kernel.const_get(audit_log_assoc[:class_name])
@@ -72,8 +118,8 @@ module Sequel
           audlog.set(
             at: Time.now,
             event: event,
-            from_state: self.status,
-            to_state: self.status,
+            from_state: self.state_machine_status,
+            to_state: self.state_machine_status,
             messages: audlog.class.state_machine_messages_supports_array ? messages : messages.join("\n"),
             reason: reason || "",
             actor: StateMachines::Sequel.current_actor,
@@ -114,25 +160,24 @@ module Sequel
 
         # Return true if the given event can be transitioned into by the current state.
         def valid_state_path_through?(event)
-          current_state = self.send(self._state_value_attr).to_sym
+          current_state_str = self.state_machine_status.to_s
+          current_state_sym = current_state_str.to_sym
           event_obj = self.class.state_machine.events[event] or raise "Invalid event #{event}"
           event_obj.branches.each do |branch|
             branch.state_requirements.each do |state_req|
-              return true if state_req[:from]&.matches?(current_state)
+              next unless (from = state_req[:from])
+              return true if from.matches?(current_state_str) || from.matches?(current_state_sym)
             end
           end
           return false
         end
 
-        def _state_value_attr
-          return @_state_value_attr ||= self.class.state_machine.attribute
-        end
-
         def validates_state_machine
           states = self.class.state_machine.states.map(&:value)
-          state = self[self._state_value_attr]
+          state = self.state_machine_status
           return if states.include?(state)
-          self.errors.add(self._state_value_attr, "status '#{state}' must be one of (#{states.sort.join(', ')})")
+          self.errors.add(self.state_machine_status_column,
+                          "state '#{state}' must be one of (#{states.sort.join(', ')})",)
         end
       end
 
