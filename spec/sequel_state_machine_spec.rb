@@ -35,6 +35,24 @@ RSpec.describe "sequel-state-machine", :db do
       index :charge_id
       foreign_key :actor_id, :users, null: true, on_delete: :set_null
     end
+    @db.create_table(:multi_machines) do
+      primary_key :id
+      text :machine1, null: false
+      text :machine2, null: false
+    end
+    @db.create_table(:multi_machine_audit_logs) do
+      primary_key :id
+      timestamp :at, null: false
+      text :event, null: false
+      text :to_state, null: false
+      text :from_state, null: false
+      text :reason, null: false, default: ""
+      text :messages, default: ""
+      text :machine_name, null: false
+      foreign_key :multi_machine_id, :multi_machines, null: false, on_delete: :cascade
+      index :multi_machine_id
+      foreign_key :actor_id, :users, null: true, on_delete: :set_null
+    end
     require_relative "spec_models"
   end
   after(:all) do
@@ -51,7 +69,8 @@ RSpec.describe "sequel-state-machine", :db do
                     :reason,
                     :messages,
                     :actor_id,
-                    :actor
+                    :actor,
+                    :machine_name
     end
   end
 
@@ -128,7 +147,7 @@ RSpec.describe "sequel-state-machine", :db do
       cls.include(Sequel::Plugins::StateMachine::InstanceMethods)
       expect do
         cls.new.sequel_state_machine_status
-      end.to raise_error(Sequel::Plugins::StateMachine::InvalidConfiguration, /with multiple state machines/)
+      end.to raise_error(ArgumentError, /must provide the :machine/)
     end
 
     it "errors if there are no state machines" do
@@ -180,6 +199,29 @@ RSpec.describe "sequel-state-machine", :db do
       instance.abc = "foo"
       expect(instance.sequel_state_machine_status).to eq("foo")
       expect(instance.current_audit_log).to be_a(audit_log_cls)
+    end
+
+    it "errors if audit logs do not have a machine_name field" do
+      logcls = Class.new(Sequel::Model) do
+        plugin :state_machine_audit_log
+        attr_accessor :at,
+                      :event,
+                      :to_state,
+                      :from_state,
+                      :reason,
+                      :messages,
+                      :actor_id,
+                      :actor
+      end
+      cls = Class.new(Sequel::Model) do
+        plugin :state_machine
+        extend StateMachines::MacroMethods
+        state_machine(:abc) {}
+        one_to_many :audit_logs, class: logcls
+      end
+      instance = cls.new
+      line = instance.audit("hello", reason: "rzn")
+      expect(line).to have_attributes(reason: "rzn", messages: ["hello"])
     end
 
     it "can override audit_logs, new_audit_log, and add_audit_log" do
@@ -356,6 +398,37 @@ RSpec.describe "sequel-state-machine", :db do
       expect(log).to have_attributes(reason2: "", messages2: ["msg"], event2: "hello")
     end
 
+    it "can partially map columns" do
+      logcls = Class.new(Sequel::Model) do
+        plugin :state_machine_audit_log, column_mappings: {
+          at: :at2,
+          event: :event2,
+        }
+        attr_accessor :at2,
+                      :event2,
+                      :to_state,
+                      :from_state,
+                      :reason,
+                      :messages,
+                      :actor_id,
+                      :actor,
+                      :machine_name
+      end
+      cls = Class.new(Sequel::Model) do
+        plugin :state_machine
+        extend StateMachines::MacroMethods
+        state_machine(:abc) {}
+        one_to_many :audit_logs, class: logcls
+
+        def add_audit_log(x)
+          return x
+        end
+      end
+      instance = cls.new
+      log = instance.audit_one_off("hello", "msg")
+      expect(log).to have_attributes(messages: ["msg"], event2: "hello")
+    end
+
     it "errors if the column remapping includes only one or the other of actor and actor_id" do
       expect do
         Class.new(Sequel::Model) do
@@ -522,6 +595,13 @@ RSpec.describe "sequel-state-machine", :db do
       expect(instance.valid_state_path_through?(:move_begin)).to be_falsey
       expect(instance.valid_state_path_through?(:move_middle)).to be_falsey
       expect(instance.valid_state_path_through?(:move_any_to_end)).to be_truthy
+
+      expect do
+        instance.valid_state_path_through?(:invalid)
+      end.to raise_error(
+        ArgumentError,
+        "Invalid event invalid (available state events: move_begin, move_middle, move_any_to_end)",
+      )
     end
   end
 
@@ -582,6 +662,98 @@ RSpec.describe "sequel-state-machine", :db do
   describe "shared examples" do
     it_behaves_like "a state machine with audit logging", :finalize, "open" do
       let(:machine) { SequelStateMachine::SpecModels::Charge.create }
+    end
+  end
+
+  describe "multiple state machines" do
+    let(:model) { SequelStateMachine::SpecModels::MultiMachine }
+
+    it "can transition and audit log" do
+      o = model.create
+      expect(o).to not_transition_on(:gom1state3)
+      expect(o).to transition_on(:gom1state2).to("m1state2").of_machine(:machine1)
+      expect(o).to not_transition_on(:gom2state3)
+      expect(o).to transition_on(:gom2state2).to("m2state2").of_machine(:machine2)
+      o.audit("msg1")
+      expect(o).to transition_on(:gom2state3).to("m2state3").of_machine(:machine2)
+      o.audit_one_off("hello2", "some msg", machine: "machine2")
+      expect(o).to transition_on(:gom1state3).to("m1state3").of_machine(:machine1)
+      o.audit_one_off("hello1", "some msg", machine: "machine1")
+
+      expect(o.audit_logs).to contain_exactly(
+        have_attributes(event: "gom1state3", from_state: "m1state1", to_state: "m1state1"),
+        have_attributes(event: "gom1state2", from_state: "m1state1", to_state: "m1state2"),
+        have_attributes(event: "gom2state3", from_state: "m2state1", to_state: "m2state1"),
+        have_attributes(event: "gom2state2", from_state: "m2state1", to_state: "m2state2"),
+        have_attributes(event: "gom2state3", from_state: "m2state2", to_state: "m2state3"),
+        have_attributes(event: "hello2", from_state: "m2state3", to_state: "m2state3"),
+        have_attributes(event: "gom1state3", from_state: "m1state2", to_state: "m1state3"),
+        have_attributes(event: "hello1", from_state: "m1state3", to_state: "m1state3"),
+      )
+
+      expect(o.audit_logs_for(:machine1)).to contain_exactly(
+        have_attributes(event: "gom1state3", from_state: "m1state1", to_state: "m1state1"),
+        have_attributes(event: "gom1state2", from_state: "m1state1", to_state: "m1state2"),
+        have_attributes(event: "gom1state3", from_state: "m1state2", to_state: "m1state3"),
+        have_attributes(event: "hello1", from_state: "m1state3", to_state: "m1state3"),
+      )
+      expect(o.audit_logs_for(:machine2)).to contain_exactly(
+        have_attributes(event: "gom2state3", from_state: "m2state1", to_state: "m2state1"),
+        have_attributes(event: "gom2state2", from_state: "m2state1", to_state: "m2state2"),
+        have_attributes(event: "gom2state3", from_state: "m2state2", to_state: "m2state3"),
+        have_attributes(event: "hello2", from_state: "m2state3", to_state: "m2state3"),
+      )
+    end
+
+    it "can use timestamp accessors" do
+      o = model.create
+      t0 = Time.new(2000, 1, 3, 0, 0, 0, "Z")
+      Timecop.freeze(t0) { expect(o).to transition_on(:gom1state2).to("m1state2").of_machine("machine1") }
+      t1 = Time.new(2000, 1, 3, 1, 0, 0, "Z")
+      Timecop.freeze(t1) { expect(o).to transition_on(:gom1state3).to("m1state3").of_machine("machine1") }
+      t2 = Time.new(2000, 1, 3, 2, 0, 0, "Z")
+      Timecop.freeze(t2) { expect(o).to transition_on(:gom2state2).to("m2state2").of_machine("machine2") }
+      t3 = Time.new(2000, 1, 3, 3, 0, 0, "Z")
+      Timecop.freeze(t3) { expect(o).to transition_on(:gom2state3).to("m2state3").of_machine("machine2") }
+      expect(o).to have_attributes(
+        m1state2_at: droptz(t0),
+        m1state3_at: droptz(t1),
+        m2state2_at: droptz(t2),
+        m2state3_at: droptz(t3),
+      )
+    end
+
+    it "can use process methods" do
+      o = model.create
+      expect(o.process(:gom1state3)).to be_falsey
+      expect(o.process(:gom1state2)).to be_truthy
+      expect(o.process(:gom1state3)).to be_truthy
+    end
+
+    it "can use valid_state_path_through" do
+      o = model.create
+      expect(o.valid_state_path_through?(:gom1state2, machine: :machine1)).to be_truthy
+      expect(o.valid_state_path_through?(:gom1state3, machine: :machine1)).to be_falsey
+      expect(o).to transition_on(:gom1state2).to("m1state2").of_machine(:machine1)
+      expect(o.valid_state_path_through?(:gom1state3, machine: :machine1)).to be_truthy
+
+      expect(o.valid_state_path_through?(:gom2state2, machine: :machine2)).to be_truthy
+      expect(o.valid_state_path_through?(:gom2state3, machine: :machine2)).to be_falsey
+      expect(o).to transition_on(:gom2state2).to("m2state2").of_machine(:machine2)
+      expect(o.valid_state_path_through?(:gom2state3, machine: :machine2)).to be_truthy
+    end
+
+    it "can use state machine validations" do
+      o = model.new
+      o.machine1 = "m1state2"
+      o.validates_state_machine(machine: :machine1)
+      expect(o.errors).to be_empty
+
+      o.machine1 = "invalid"
+      o.validates_state_machine(machine: :machine1)
+      expect(o.errors[:machine1].first).to eq(
+        "state 'invalid' must be one of (m1state1, m1state2, m1state3)",
+      )
     end
   end
 

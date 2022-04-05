@@ -6,18 +6,20 @@ require "sequel/model"
 module Sequel
   module Plugins
     module StateMachineAuditLog
+      DEFAULT_COLUMN_MAPPINGS = {
+        at: :at,
+        event: :event,
+        to_state: :to_state,
+        from_state: :from_state,
+        reason: :reason,
+        messages: :messages,
+        actor_id: :actor_id,
+        actor: :actor,
+        machine_name: :machine_name,
+      }.freeze
       DEFAULT_OPTIONS = {
         messages_supports_array: :undefined,
-        column_mappings: {
-          at: :at,
-          event: :event,
-          to_state: :to_state,
-          from_state: :from_state,
-          reason: :reason,
-          messages: :messages,
-          actor_id: :actor_id,
-          actor: :actor,
-        }.freeze,
+        column_mappings: DEFAULT_COLUMN_MAPPINGS,
       }.freeze
       def self.configure(model, opts=DEFAULT_OPTIONS)
         opts = DEFAULT_OPTIONS.merge(opts)
@@ -28,6 +30,7 @@ module Sequel
           msg = "Remapping columns :actor and :actor_id must both be supplied"
           raise Sequel::Plugins::StateMachine::InvalidConfiguration, msg
         end
+        colmap = DEFAULT_COLUMN_MAPPINGS.merge(colmap)
         model.state_machine_column_mappings = colmap
         msgarray = opts[:messages_supports_array] || true
         if msgarray == :undefined
@@ -85,6 +88,10 @@ module Sequel
         end
 
         def sequel_state_machine_map_columns(**kw)
+          # We may pass in a machine_name of nil when we are using single-state-machine models.
+          # In this case, we assume the audit logs don't have a machine_name column,
+          # so always remove the column if the machine is nil.
+          kw.delete(:machine_name) if kw[:machine_name].nil?
           mappings = self.class.state_machine_column_mappings
           return kw.transform_keys { |k| mappings[k] or raise KeyError, "field #{k} unmapped in #{mappings}" }
         end
