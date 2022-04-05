@@ -35,6 +35,83 @@ RSpec.describe "sequel-state-machine", :db do
     @db.disconnect
   end
 
+  describe "configuration" do
+    it "can specify the column to use" do
+      cls = Class.new do
+        extend StateMachines::MacroMethods
+        attr_accessor :abc
+
+        state_machine(:abc, initial: :begin) {}
+      end
+      Sequel::Plugins::StateMachine.apply(cls, status_column: :abc)
+      cls.include(Sequel::Plugins::StateMachine::InstanceMethods)
+      instance = cls.new
+      instance.abc = "foo"
+      expect(instance.sequel_state_machine_status).to eq("foo")
+    end
+
+    it "can specify the column to use using the legacy _attr field" do
+      cls = Class.new do
+        extend StateMachines::MacroMethods
+        attr_accessor :xyz
+
+        state_machine(:abc, initial: :begin) {}
+
+        def _state_value_attr
+          return :xyz
+        end
+      end
+      Sequel::Plugins::StateMachine.apply(cls)
+      cls.include(Sequel::Plugins::StateMachine::InstanceMethods)
+      instance = cls.new
+      instance.xyz = "foo"
+      expect(instance.sequel_state_machine_status).to eq("foo")
+    end
+
+    it "defaults to the first state machine status column" do
+      cls = Class.new do
+        extend StateMachines::MacroMethods
+        attr_accessor :abc
+
+        state_machine(:abc, initial: :begin) {}
+      end
+      Sequel::Plugins::StateMachine.apply(cls)
+      cls.include(Sequel::Plugins::StateMachine::InstanceMethods)
+      instance = cls.new
+      instance.abc = "foo"
+      expect(instance.sequel_state_machine_status).to eq("foo")
+    end
+
+    it "errors if there are multiple state machines" do
+      cls = Class.new do
+        extend StateMachines::MacroMethods
+        attr_accessor :abc, :xyz
+
+        state_machine :abc do
+        end
+        state_machine :xyz do
+        end
+      end
+      Sequel::Plugins::StateMachine.apply(cls)
+      cls.include(Sequel::Plugins::StateMachine::InstanceMethods)
+      expect do
+        cls.new.sequel_state_machine_status
+      end.to raise_error(Sequel::Plugins::StateMachine::InvalidConfiguration, /with multiple state machines/)
+    end
+
+    it "errors if there are no state machines" do
+      cls = Class.new do
+        extend StateMachines::MacroMethods
+        attr_accessor :abc, :xyz
+      end
+      Sequel::Plugins::StateMachine.apply(cls)
+      cls.include(Sequel::Plugins::StateMachine::InstanceMethods)
+      expect do
+        cls.new.sequel_state_machine_status
+      end.to raise_error(Sequel::Plugins::StateMachine::InvalidConfiguration, /Model must extend/)
+    end
+  end
+
   describe "audit logging" do
     let(:model) { SequelStateMachine::SpecModels::Charge }
 
@@ -250,7 +327,7 @@ RSpec.describe "sequel-state-machine", :db do
         end
 
         event :move_middle do
-          transition((all - [:begin, :end]) => :end)
+          transition middle: :end
         end
 
         event :move_any_to_end do
@@ -258,6 +335,8 @@ RSpec.describe "sequel-state-machine", :db do
         end
       end
     end
+    Sequel::Plugins::StateMachine.apply(test_cls)
+    Sequel::Plugins::StateMachine.configure(test_cls)
 
     let(:instance) { test_cls.new }
 
@@ -290,7 +369,7 @@ RSpec.describe "sequel-state-machine", :db do
       instance.status_col = "invalid"
       instance.validates_state_machine
       expect(instance.errors[:status_col].first).to eq(
-        "status 'invalid' must be one of (charged, failed, open, paid, pending)",
+        "state 'invalid' must be one of (charged, failed, open, paid, pending)",
       )
     end
   end
