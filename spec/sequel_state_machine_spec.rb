@@ -74,6 +74,10 @@ RSpec.describe "sequel-state-machine", :db do
     end
   end
 
+  it "has a version" do
+    expect(StateMachines::Sequel::VERSION).to be_a(String)
+  end
+
   describe "configuration" do
     it "can specify the column to use as a kwarg" do
       cls = Class.new do
@@ -671,13 +675,13 @@ RSpec.describe "sequel-state-machine", :db do
     it "can transition and audit log" do
       o = model.create
       expect(o).to not_transition_on(:gom1state3)
-      expect(o).to transition_on(:gom1state2).to("m1state2").of_machine(:machine1)
+      expect(o).to transition_on(:gom1state2).to("m1state2")
       expect(o).to not_transition_on(:gom2state3)
-      expect(o).to transition_on(:gom2state2).to("m2state2").of_machine(:machine2)
+      expect(o).to transition_on(:gom2state2).to("m2state2")
       o.audit("msg1")
-      expect(o).to transition_on(:gom2state3).to("m2state3").of_machine(:machine2)
+      expect(o).to transition_on(:gom2state3).to("m2state3")
       o.audit_one_off("hello2", "some msg", machine: "machine2")
-      expect(o).to transition_on(:gom1state3).to("m1state3").of_machine(:machine1)
+      expect(o).to transition_on(:gom1state3).to("m1state3")
       o.audit_one_off("hello1", "some msg", machine: "machine1")
 
       expect(o.audit_logs).to contain_exactly(
@@ -708,13 +712,13 @@ RSpec.describe "sequel-state-machine", :db do
     it "can use timestamp accessors" do
       o = model.create
       t0 = Time.new(2000, 1, 3, 0, 0, 0, "Z")
-      Timecop.freeze(t0) { expect(o).to transition_on(:gom1state2).to("m1state2").of_machine("machine1") }
+      Timecop.freeze(t0) { expect(o).to transition_on(:gom1state2).to("m1state2") }
       t1 = Time.new(2000, 1, 3, 1, 0, 0, "Z")
-      Timecop.freeze(t1) { expect(o).to transition_on(:gom1state3).to("m1state3").of_machine("machine1") }
+      Timecop.freeze(t1) { expect(o).to transition_on(:gom1state3).to("m1state3") }
       t2 = Time.new(2000, 1, 3, 2, 0, 0, "Z")
-      Timecop.freeze(t2) { expect(o).to transition_on(:gom2state2).to("m2state2").of_machine("machine2") }
+      Timecop.freeze(t2) { expect(o).to transition_on(:gom2state2).to("m2state2") }
       t3 = Time.new(2000, 1, 3, 3, 0, 0, "Z")
-      Timecop.freeze(t3) { expect(o).to transition_on(:gom2state3).to("m2state3").of_machine("machine2") }
+      Timecop.freeze(t3) { expect(o).to transition_on(:gom2state3).to("m2state3") }
       expect(o).to have_attributes(
         m1state2_at: droptz(t0),
         m1state3_at: droptz(t1),
@@ -734,12 +738,12 @@ RSpec.describe "sequel-state-machine", :db do
       o = model.create
       expect(o.valid_state_path_through?(:gom1state2, machine: :machine1)).to be_truthy
       expect(o.valid_state_path_through?(:gom1state3, machine: :machine1)).to be_falsey
-      expect(o).to transition_on(:gom1state2).to("m1state2").of_machine(:machine1)
+      expect(o).to transition_on(:gom1state2).to("m1state2")
       expect(o.valid_state_path_through?(:gom1state3, machine: :machine1)).to be_truthy
 
       expect(o.valid_state_path_through?(:gom2state2, machine: :machine2)).to be_truthy
       expect(o.valid_state_path_through?(:gom2state3, machine: :machine2)).to be_falsey
-      expect(o).to transition_on(:gom2state2).to("m2state2").of_machine(:machine2)
+      expect(o).to transition_on(:gom2state2).to("m2state2")
       expect(o.valid_state_path_through?(:gom2state3, machine: :machine2)).to be_truthy
     end
 
@@ -754,6 +758,107 @@ RSpec.describe "sequel-state-machine", :db do
       expect(o.errors[:machine1].first).to eq(
         "state 'invalid' must be one of (m1state1, m1state2, m1state3)",
       )
+    end
+  end
+
+  describe "spec helpers" do
+    describe "transition_on" do
+      let(:instance) { SequelStateMachine::SpecModels::Charge.create }
+
+      it "succeeds on a successful transition" do
+        expect(instance).to transition_on(:finalize).to("open")
+      end
+      it "can accept arguments" do
+        expect(instance).to receive(:finalize).with(1).and_call_original
+        expect(instance).to transition_on(:finalize).with(1).to("open")
+      end
+      it "errors if the transition fails" do
+        expect do
+          expect(instance).to transition_on(:charge).to("charged")
+        end.to raise_error(
+          RSpec::Expectations::ExpectationNotMetError,
+          "expected that event charge would transition to charged but is pending",
+        )
+      end
+      it "errors if the transition is incorrect" do
+        instance.status_col = "open"
+        expect do
+          expect(instance).to transition_on(:charge).to("pending")
+        end.to raise_error(
+          RSpec::Expectations::ExpectationNotMetError,
+          "expected that event charge would transition to pending but is paid",
+        )
+      end
+      it "errors if no state is passed" do
+        expect do
+          expect(instance).to transition_on(:charge)
+        end.to raise_error(/must use :to to provide a target state/)
+      end
+      it "can audit" do
+        expect do
+          expect(instance).to transition_on(:charge).to("foo").audit
+        end.to raise_error(
+          RSpec::Expectations::ExpectationNotMetError,
+          /SequelStateMachine::SpecModels::ChargeAuditLog/,
+        )
+      end
+      it "can be used for models with multiple statre machines" do
+        instance = SequelStateMachine::SpecModels::MultiMachine.create
+        expect do
+          expect(instance).to transition_on(:gom1state2).to("m1state3")
+        end.to raise_error(
+          RSpec::Expectations::ExpectationNotMetError,
+          "expected that event gom1state2 would transition to m1state3 but is m1state2",
+        )
+      end
+      it "errors if event does not exist on any state machine" do
+        instance = SequelStateMachine::SpecModels::MultiMachine.create
+        instance.define_singleton_method(:foo) { true }
+        expect do
+          expect(instance).to transition_on(:foo).to("m1state3")
+        end.to raise_error(
+          ArgumentError,
+          /has no state machine for event foo/,
+        )
+      end
+    end
+    describe "not_transition_on" do
+      let(:instance) { SequelStateMachine::SpecModels::Charge.create }
+
+      it "succeeds if no transition" do
+        expect(instance).to not_transition_on(:charge)
+      end
+      it "can use args" do
+        expect(instance).to receive(:charge).with(1)
+        expect(instance).to not_transition_on(:charge).with(1)
+      end
+      it "errors if transition happens" do
+        expect do
+          expect(instance).to not_transition_on(:finalize)
+        end.to raise_error(
+          RSpec::Expectations::ExpectationNotMetError,
+          "expected that event finalize would not transition, but did and is now open",
+        )
+      end
+      it "can be used for models with multiple state machines" do
+        instance = SequelStateMachine::SpecModels::MultiMachine.create
+        expect do
+          expect(instance).to not_transition_on(:gom1state2)
+        end.to raise_error(
+          RSpec::Expectations::ExpectationNotMetError,
+          "expected that event gom1state2 would not transition, but did and is now m1state2",
+        )
+      end
+      it "errors if the event is not found on a model" do
+        instance = SequelStateMachine::SpecModels::MultiMachine.create
+        instance.define_singleton_method(:foo) { true }
+        expect do
+          expect(instance).to not_transition_on(:foo)
+        end.to raise_error(
+          ArgumentError,
+          /has no state machine for event foo/,
+        )
+      end
     end
   end
 
