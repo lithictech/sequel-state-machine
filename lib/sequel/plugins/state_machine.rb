@@ -117,8 +117,8 @@ module Sequel
           @current_audit_logs[machine] = nil
         end
 
-        def audit(message, reason: nil)
-          audlog = self.current_audit_log
+        def audit(message, reason: nil, machine: nil)
+          audlog = self.current_audit_log(machine: machine)
           if audlog.class.state_machine_messages_supports_array
             audlog.messages ||= []
             audlog.messages << message

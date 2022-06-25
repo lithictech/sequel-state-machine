@@ -678,7 +678,7 @@ RSpec.describe "sequel-state-machine", :db do
       expect(o).to transition_on(:gom1state2).to("m1state2")
       expect(o).to not_transition_on(:gom2state3)
       expect(o).to transition_on(:gom2state2).to("m2state2")
-      o.audit("msg1")
+      o.audit("msg1", machine: :machine2)
       expect(o).to transition_on(:gom2state3).to("m2state3")
       o.audit_one_off("hello2", "some msg", machine: "machine2")
       expect(o).to transition_on(:gom1state3).to("m1state3")
@@ -689,7 +689,7 @@ RSpec.describe "sequel-state-machine", :db do
         have_attributes(event: "gom1state2", from_state: "m1state1", to_state: "m1state2"),
         have_attributes(event: "gom2state3", from_state: "m2state1", to_state: "m2state1"),
         have_attributes(event: "gom2state2", from_state: "m2state1", to_state: "m2state2"),
-        have_attributes(event: "gom2state3", from_state: "m2state2", to_state: "m2state3"),
+        have_attributes(event: "gom2state3", from_state: "m2state2", to_state: "m2state3", messages: include("msg1")),
         have_attributes(event: "hello2", from_state: "m2state3", to_state: "m2state3"),
         have_attributes(event: "gom1state3", from_state: "m1state2", to_state: "m1state3"),
         have_attributes(event: "hello1", from_state: "m1state3", to_state: "m1state3"),
