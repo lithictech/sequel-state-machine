@@ -1,3 +1,6 @@
+[![Gem Version](https://badge.fury.io/rb/sequel-state-machine.svg)](https://badge.fury.io/rb/sequel-state-machine)
+[![Status](https://github.com/lithictech/sequel-state-machine/actions/workflows/pr-checks.yml/badge.svg)](https://github.com/lithictech/sequel-state-machine/actions/workflows/pr-checks.yml)
+
 # sequel-state-machine
 
 `sequel-state-machines` is a pair of plugins that supercharge your usage of
