@@ -33,6 +33,10 @@ module SequelStateMachine
           transition any => :failed
         end
 
+        event :reset do
+          transition failed: :pending
+        end
+
         after_transition(&:commit_audit_log)
         after_failure(&:commit_audit_log)
       end
