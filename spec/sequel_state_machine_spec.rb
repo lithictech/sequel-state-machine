@@ -318,26 +318,66 @@ RSpec.describe "sequel-state-machine", :db do
       )
     end
 
-    it "updates the existing audit log for the transition, rather than adding a new one" do
+    it "updates the existing audit log for the last transition, rather than adding a new one" do
       o = model.create
-      o_meta = class << o; self; end
-      o_meta.send(:define_method, :charge) do
-        self.audit("msg1", reason: "first fail")
-        super()
-      end
+      o.audit("", reason: "first fail")
       expect(o).to not_transition_on(:charge)
       expect(o.audit_logs).to contain_exactly(
-        have_attributes(event: "charge", reason: "first fail"),
+        have_attributes(from_state: "pending", to_state: "pending", event: "charge", reason: "first fail"),
       )
 
-      o_meta.send(:define_method, :charge) do
-        self.audit("msg2", reason: "second fail")
-        super()
-      end
+      o.audit("", reason: "second fail")
       expect(o).to not_transition_on(:charge)
 
       expect(o.refresh.audit_logs).to contain_exactly(
-        have_attributes(event: "charge", reason: "second fail"),
+        have_attributes(from_state: "pending", to_state: "pending", event: "charge", reason: "second fail"),
+      )
+    end
+
+    it "creates a new audit log if one already exists for the transition but it has newer logs" do
+      o = model.create
+      o.audit("", reason: "bad charge1")
+      expect(o).to not_transition_on(:charge)
+      expect(o.audit_logs).to contain_exactly(
+        have_attributes(from_state: "pending", to_state: "pending", event: "charge", reason: "bad charge1"),
+      )
+      # First make sure we actually update the log, though this is redundant with another test
+      o.audit("", reason: "bad charge2")
+      expect(o).to not_transition_on(:charge)
+      expect(o.audit_logs).to contain_exactly(
+        have_attributes(from_state: "pending", to_state: "pending", event: "charge", reason: "bad charge2"),
+      )
+
+      o.audit("", reason: "first finalize")
+      expect(o).to transition_on(:finalize).to("open")
+      expect(o.audit_logs).to contain_exactly(
+        have_attributes(from_state: "pending", to_state: "pending", event: "charge", reason: "bad charge2"),
+        have_attributes(from_state: "pending", to_state: "open", event: "finalize", reason: "first finalize"),
+      )
+
+      o.audit("", reason: "pay")
+      expect(o).to transition_on(:charge).to("paid")
+      expect(o.audit_logs).to contain_exactly(
+        have_attributes(from_state: "pending", to_state: "pending", event: "charge", reason: "bad charge2"),
+        have_attributes(from_state: "pending", to_state: "open", event: "finalize", reason: "first finalize"),
+        have_attributes(from_state: "open", to_state: "paid", event: "charge", reason: "pay"),
+      )
+
+      # Reset the state machine to see what happens when we replay it
+      expect(o).to transition_on(:set_failed).to("failed")
+      expect(o).to transition_on(:reset).to("pending")
+      # "Replaying" the state machine should add new logs for each transition.
+      # See commit_audit_log for details.
+      expect(o).to transition_on(:finalize).to("open")
+      expect(o).to transition_on(:charge).to("paid")
+      expect(o.audit_logs).to contain_exactly(
+        have_attributes(from_state: "pending", to_state: "pending", event: "charge", reason: "bad charge2"),
+        have_attributes(from_state: "pending", to_state: "open", event: "finalize", reason: "first finalize"),
+        have_attributes(from_state: "open", to_state: "paid", event: "charge", reason: "pay"),
+        have_attributes(from_state: "paid", to_state: "failed", event: "set_failed", reason: ""),
+        have_attributes(from_state: "failed", to_state: "pending", event: "reset", reason: ""),
+        have_attributes(from_state: "pending", to_state: "open", event: "finalize", reason: ""),
+        have_attributes(from_state: "open", to_state: "paid", event: "charge", reason: ""),
       )
     end
 
@@ -576,6 +616,7 @@ RSpec.describe "sequel-state-machine", :db do
           end
 
           event :move_any_to_end do
+            # noinspection RubyArgCount
             transition all => :end
           end
         end

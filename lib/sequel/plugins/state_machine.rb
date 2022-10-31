@@ -83,6 +83,16 @@ module Sequel
           return alog
         end
 
+        # Commit pending changes to the audit log.
+        # This involves either:
+        # - Updating the last audit log step, if it matches our current criteria (event, from state, to state),
+        # - or creating a new audit log entry.
+        # This ensures that we have the following behavior:
+        # - Failed transitions - ie where from and to state are the same - do not add multiple audit log steps.
+        #   Only the latest failed transition is recorded.
+        # - Successful transitions are always recorded. If we transition, a->b->c,
+        #   and then reset the state machine to 'a' and transition a->b->c again,
+        #   we'd end up with 5 transitions (a->b->c->a->b->c).
         def commit_audit_log(transition)
           machine = self.class.state_machines.length > 1 ? transition.machine.name : nil
           StateMachines::Sequel.log(
@@ -90,14 +100,14 @@ module Sequel
           )
           current = self.current_audit_log(machine: machine)
 
-          last_saved = self.audit_logs.find do |a|
-            a.sequel_state_machine_get(:event) == transition.event.to_s &&
-              a.sequel_state_machine_get(:from_state) == transition.from &&
-              a.sequel_state_machine_get(:to_state) == transition.to
-          end
-          if last_saved
-            StateMachines::Sequel.log(self, :debug, "updating_audit_log", {audit_log_id: last_saved.id})
-            last_saved.update(**last_saved.sequel_state_machine_map_columns(
+          last_log = self.audit_logs.last
+          can_update_last = last_log &&
+            last_log.sequel_state_machine_get(:event) == transition.event.to_s &&
+            last_log.sequel_state_machine_get(:from_state) == transition.from &&
+            last_log.sequel_state_machine_get(:to_state) == transition.to
+          if can_update_last
+            StateMachines::Sequel.log(self, :debug, "updating_audit_log", {audit_log_id: last_log.id})
+            last_log.update(**last_log.sequel_state_machine_map_columns(
               at: Time.now,
               actor: StateMachines::Sequel.current_actor,
               messages: current.messages,
