@@ -1,0 +1,12 @@
+version: "3.4"
+
+services:
+  testdb:
+    image: "postgres:15"
+    ports:
+      - "11101:5432"
+    environment:
+      POSTGRES_USER: 'ostest'
+      POSTGRES_PASSWORD: 'ostest'
+      POSTGRES_DB: 'ostest'
+      POSTGRES_INITDB_ARGS: '--auth=md5'

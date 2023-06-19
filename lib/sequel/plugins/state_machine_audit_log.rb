@@ -76,7 +76,7 @@ module Sequel
 
         def full_message
           msg = self.sequel_state_machine_get(:messages)
-          return self.class.state_machine_messages_supports_array ? msg.join(", ") : msg
+          return self.class.state_machine_messages_supports_array ? msg.join("\n") : msg
         end
 
         def sequel_state_machine_get(unmapped)
