@@ -13,7 +13,18 @@ RSpec.describe "sequel-state-machine", :db do
   end
 
   before(:all) do
-    @db = Sequel.sqlite
+    if (dburl = ENV["DATABASE_URL"])
+      @db = Sequel.connect(dburl)
+      @db.extension(:pg_json)
+      usearray = true
+    else
+      @db = Sequel.sqlite
+      usearray = false
+    end
+    @usearray = usearray
+    [:charge_audit_logs, :charges, :multi_machine_audit_logs, :multi_machines, :users].each do |t|
+      @db.drop_table?(t)
+    end
     @db.create_table(:users) do
       primary_key :id
     end
@@ -30,7 +41,11 @@ RSpec.describe "sequel-state-machine", :db do
       text :to_state, null: false
       text :from_state, null: false
       text :reason, null: false, default: ""
-      text :messages, default: ""
+      if usearray
+        jsonb :messages, default: "[]", null: false
+      else
+        text :messages, default: "", null: false
+      end
       foreign_key :charge_id, :charges, null: false, on_delete: :cascade
       index :charge_id
       foreign_key :actor_id, :users, null: true, on_delete: :set_null
@@ -47,7 +62,11 @@ RSpec.describe "sequel-state-machine", :db do
       text :to_state, null: false
       text :from_state, null: false
       text :reason, null: false, default: ""
-      text :messages, default: ""
+      if usearray
+        jsonb :messages, default: "[]", null: false
+      else
+        text :messages, default: "", null: false
+      end
       text :machine_name, null: false
       foreign_key :multi_machine_id, :multi_machines, null: false, on_delete: :cascade
       index :multi_machine_id
@@ -55,8 +74,14 @@ RSpec.describe "sequel-state-machine", :db do
     end
     require_relative "spec_models"
   end
+
   after(:all) do
     @db.disconnect
+  end
+
+  def ary?(s)
+    return [s] if @usearray
+    return s
   end
 
   let(:audit_log_cls) do
@@ -302,8 +327,20 @@ RSpec.describe "sequel-state-machine", :db do
       end
       expect(o).to transition_on(:finalize).to("open")
       expect(o.audit_logs).to contain_exactly(
-        have_attributes(event: "finalize", messages: "doing a thing", full_message: "doing a thing"),
+        have_attributes(event: "finalize", messages: ary?("doing a thing"), full_message: "doing a thing"),
       )
+    end
+
+    it "can handle a plain successful transition" do
+      o = model.create
+      expect(o).to transition_on(:finalize).to("open")
+      expect(o.audit_logs).to contain_exactly(have_attributes(event: "finalize", messages: @usearray ? [] : ""))
+    end
+
+    it "can handle a plain failed transition" do
+      o = model.create
+      expect(o).to not_transition_on(:reset)
+      expect(o.audit_logs).to contain_exactly(have_attributes(event: "reset", messages: @usearray ? [] : ""))
     end
 
     it "can include a reason for a failed transition" do
@@ -390,7 +427,7 @@ RSpec.describe "sequel-state-machine", :db do
           from_state: "pending",
           to_state: "pending",
           reason: "rsn",
-          messages: "msg1\nmsg2",
+          messages: @usearray ? ["msg1", "msg2"] : "msg1\nmsg2",
           full_message: "msg1\nmsg2",
         ),
       )
@@ -401,7 +438,7 @@ RSpec.describe "sequel-state-machine", :db do
       o.audit_one_off("one_off", "my message")
       expect(o.audit_logs).to contain_exactly(
         have_attributes(
-          messages: "my message",
+          messages: ary?("my message"),
         ),
       )
     end
@@ -501,7 +538,7 @@ RSpec.describe "sequel-state-machine", :db do
         end
         expect(o.audit_logs).to contain_exactly(
           have_attributes(
-            messages: "my message",
+            messages: ary?("my message"),
             actor: be === user,
           ),
         )
@@ -574,7 +611,7 @@ RSpec.describe "sequel-state-machine", :db do
       expect do
         instance.must_process(:charge)
       end.to raise_error(
-        "SequelStateMachine::SpecModels::Charge[#{instance.id}] failed to transition on charge: hellonewer",
+        "SequelStateMachine::SpecModels::Charge[#{instance.id}] failed to transition on charge: hello, newer",
       )
     end
   end

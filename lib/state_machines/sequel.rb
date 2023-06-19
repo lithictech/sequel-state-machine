@@ -16,7 +16,7 @@ module StateMachines
         if obj.respond_to?(:audit_logs) && !obj.audit_logs.empty?
           @audit_log = obj.audit_logs.max_by(&:id)
           msg += ": #{@audit_log.full_message}"
-          msg = msg.tr("\n", " ").strip
+          msg = msg.gsub("\n", ", ").strip
         end
         super(obj, msg)
       end

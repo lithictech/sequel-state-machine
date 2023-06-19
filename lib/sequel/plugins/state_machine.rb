@@ -107,12 +107,13 @@ module Sequel
             last_log.sequel_state_machine_get(:to_state) == transition.to
           if can_update_last
             StateMachines::Sequel.log(self, :debug, "updating_audit_log", {audit_log_id: last_log.id})
-            last_log.update(**last_log.sequel_state_machine_map_columns(
+            mapped_values = last_log.sequel_state_machine_map_columns(
               at: Time.now,
               actor: StateMachines::Sequel.current_actor,
-              messages: current.messages,
+              messages: current.messages || (current.class.state_machine_messages_supports_array ? [] : ""),
               reason: current.reason,
-            ))
+            )
+            last_log.update(**mapped_values)
           else
             StateMachines::Sequel.log(self, :debug, "creating_audit_log", {})
             current.set(**current.sequel_state_machine_map_columns(
@@ -134,7 +135,7 @@ module Sequel
             audlog.messages << message
           else
             audlog.messages ||= ""
-            audlog.messages += (audlog.messages.empty? ? message : (message + "\n"))
+            audlog.messages += (audlog.messages.empty? ? message : ("\n" + message))
           end
           audlog.reason = reason if reason
           return audlog

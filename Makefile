@@ -8,10 +8,17 @@ fix:
 	bundle exec rubocop --auto-correct-all
 fmt: fix
 
+up:
+	@docker-compose up -d
+
+down:
+	docker-compose down
+psql:
+	psql postgres://ostest:ostest@localhost:11101/ostest
+
 test:
-	RACK_ENV=test bundle exec rspec spec/
-testf:
-	RACK_ENV=test bundle exec rspec spec/ --fail-fast --seed=1
+	bundle exec rspec spec/
+	DATABASE_URL=postgres://ostest:ostest@localhost:11101/ostest bundle exec rspec spec/
 
 build:
 ifeq ($(strip $(VERSION)),)
